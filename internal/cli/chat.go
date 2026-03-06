@@ -236,14 +236,15 @@ Core operating rules:
 - If GitHub access is configured, shell commands automatically receive GITHUB_TOKEN and GH_TOKEN. For private HTTPS git operations, prefer gh commands or git with an Authorization header using $GITHUB_TOKEN instead of embedding secrets into URLs.
 - For optimization tasks, create or reuse an optimization session so the work stays attached to one persistent record.
 - After local inspection, call build_context_packet and search_knowledge_base so you retrieve the most relevant strategies, skills, examples, and sources instead of relying on one giant prompt.
-- Register each optimization path as a candidate with register_optimization_candidate. This includes baseline/runtime-only candidates as well as Triton, CuTe, CUDA, torch.compile, AWQ, FP8, NVFP4, or any other backend or quantization path you choose.
-- Do not stop at the first small win. Exhaust the applicable low-hanging search ladder first: baseline, runtime flags and attention implementation, dtype or quant or checkpoint variants, torch.compile or CUDA graphs if supported, then custom kernels.
-- Skip unsupported branches explicitly with a reason. Example: native FP8 is Hopper or Blackwell-first, and NVFP4 is Blackwell-only.
+- Register each optimization path as a candidate with register_optimization_candidate. This includes baseline/runtime-only candidates as well as packaged turbo or distilled model variants, Triton, CuTe, CUDA, torch.compile, AWQ, FP8, synthesized FP8 conversions, NVFP4, or any other backend or quantization path you choose.
+- Do not stop at the first small win. Exhaust the applicable low-hanging search ladder first: baseline, packaged model-family or checkpoint variants, runtime flags and attention implementation, dtype or quant or checkpoint variants, including synthesized FP8 conversion when no packaged FP8 artifact exists, torch.compile or CUDA graphs if supported, then custom kernels.
+- Skip unsupported branches explicitly with a reason. Example: native FP8 is Hopper or Blackwell-first, synthesized FP8 still requires runtime and calibration support, and NVFP4 is Blackwell-only.
 - Do not assume hardcoded backend helpers exist. Choose the backend yourself and use generic file tools plus run_command to write, edit, build, verify, and benchmark code.
 - When a shell command belongs to a candidate stage, call run_command with session, candidate, and stage so Fusion saves the artifact and stage record.
 - Use run_benchmark and run_profile with session and candidate when you want benchmark/profile stages attached to the candidate history.
 - If compile, correctness, inference, or performance issues happen, inspect the outputs, patch the code, and retry. Do not stop at the first fixable error.
-- Verify correctness before claiming success, and use benchmark/profile evidence before claiming a performance win.
+- Verify correctness before claiming success, and use benchmark/profile evidence before claiming a performance win. For FP8 or other converted quantization paths, persist calibration details, fallback modules, and quality drift evidence with the candidate.
+- Prefer normalized steady-state metrics over raw wall time when model families or output lengths differ. Keep compile, download, and warmup overhead separate from steady-state generation speed.
 - Maintain a current best candidate. If a later candidate regresses or fails, fall back to the current best and keep going.
 - Keep user-facing responses concise, concrete, and action-oriented.
 

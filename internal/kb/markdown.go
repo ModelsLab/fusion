@@ -2,6 +2,7 @@ package kb
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -63,6 +64,8 @@ type markdownFrontMatter struct {
 	Backends              []string `yaml:"backends"`
 	Path                  string   `yaml:"path"`
 }
+
+var errMissingFrontMatter = errors.New("missing leading YAML front matter delimiter")
 
 func HasMarkdownFiles(root string) (bool, error) {
 	root = strings.TrimSpace(root)
@@ -489,6 +492,20 @@ func parseMarkdownEntry(path, root string, data []byte) (markdownFrontMatter, st
 	var meta markdownFrontMatter
 	frontMatter, body, err := splitFrontMatter(data)
 	if err != nil {
+		relPath, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return meta, "", fmt.Errorf("resolve relative path %s: %w", path, relErr)
+		}
+		relPath = filepath.ToSlash(relPath)
+		if errors.Is(err, errMissingFrontMatter) {
+			meta.Kind = inferKindFromPath(relPath)
+			meta.Path = relPath
+			meta.ID = strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath))
+			meta.Title = humanizeID(meta.ID)
+			bodyText := strings.TrimSpace(string(data))
+			meta.Summary = deriveSummary(bodyText)
+			return meta, bodyText, nil
+		}
 		return meta, "", fmt.Errorf("parse front matter %s: %w", path, err)
 	}
 	if err := yaml.Unmarshal(frontMatter, &meta); err != nil {
@@ -523,7 +540,7 @@ func parseMarkdownEntry(path, root string, data []byte) (markdownFrontMatter, st
 func splitFrontMatter(data []byte) ([]byte, []byte, error) {
 	text := string(data)
 	if !strings.HasPrefix(text, "---\n") && !strings.HasPrefix(text, "---\r\n") {
-		return nil, data, fmt.Errorf("missing leading YAML front matter delimiter")
+		return nil, data, errMissingFrontMatter
 	}
 	trimmed := strings.TrimPrefix(strings.TrimPrefix(text, "---\r\n"), "---\n")
 	idx := strings.Index(trimmed, "\n---")

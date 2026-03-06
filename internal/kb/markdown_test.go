@@ -104,3 +104,58 @@ func TestExportMarkdownAndLoadMarkdownDir(t *testing.T) {
 		t.Fatalf("unexpected document id %q", fsLoaded.Documents[0].ID)
 	}
 }
+
+func TestLoadMarkdownDirLegacyDocumentWithoutFrontMatter(t *testing.T) {
+	root := t.TempDir()
+	docPath := filepath.Join(root, "documents", "legacy-note.md")
+	if err := os.MkdirAll(filepath.Dir(docPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "# Legacy Note\n\nThis is an older knowledge document without structured front matter."
+	if err := os.WriteFile(docPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	loaded, err := LoadMarkdownDir(root)
+	if err != nil {
+		t.Fatalf("LoadMarkdownDir() error = %v", err)
+	}
+	if len(loaded.Documents) != 1 {
+		t.Fatalf("expected 1 document, got %d", len(loaded.Documents))
+	}
+	if loaded.Documents[0].ID != "legacy-note" {
+		t.Fatalf("unexpected document id %q", loaded.Documents[0].ID)
+	}
+	if loaded.Documents[0].Title != "Legacy Note" {
+		t.Fatalf("unexpected document title %q", loaded.Documents[0].Title)
+	}
+	if loaded.Documents[0].Body != content {
+		t.Fatal("expected legacy document body to be preserved")
+	}
+}
+
+func TestLoadMarkdownDirLegacySourceWithoutFrontMatter(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "sources", "legacy-source.md")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "# Legacy Source\n\nThis older source note predates structured front matter."
+	if err := os.WriteFile(sourcePath, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	loaded, err := LoadMarkdownDir(root)
+	if err != nil {
+		t.Fatalf("LoadMarkdownDir() error = %v", err)
+	}
+	if len(loaded.Sources) != 1 {
+		t.Fatalf("expected 1 source, got %d", len(loaded.Sources))
+	}
+	if loaded.Sources[0].ID != "legacy-source" {
+		t.Fatalf("unexpected source id %q", loaded.Sources[0].ID)
+	}
+	if loaded.Sources[0].Title != "Legacy Source" {
+		t.Fatalf("unexpected source title %q", loaded.Sources[0].Title)
+	}
+}

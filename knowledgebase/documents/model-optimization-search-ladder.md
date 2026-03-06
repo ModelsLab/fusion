@@ -53,11 +53,19 @@ Do not stop at the first positive delta. Build a candidate ladder, test every ap
 
 1. Establish a seeded correctness and performance baseline.
 2. Build an applicability matrix for the current GPU, model, runtime, and workload.
-3. Test runtime-only low-hanging fruit first.
-4. Test precision, checkpoint, and quantization variants that are actually supported by the target GPU.
-5. Test compile and graph-capture paths if the environment supports them.
-6. Only then spend time on custom kernels and backend rewrites.
-7. Rank all passing candidates and promote the current best.
+3. Test packaged model-family, checkpoint, and runtime-flavor variants early.
+4. Test runtime-only low-hanging fruit next.
+5. Test precision, checkpoint, and quantization variants that are actually supported by the target GPU.
+6. Test compile and graph-capture paths if the environment supports them.
+7. Only then spend time on custom kernels and backend rewrites.
+8. Rank all passing candidates and promote the current best.
+
+## Model Family And Checkpoint Pass
+
+- Check whether the package or upstream repo already ships faster variants such as turbo, distilled, or smaller decode models.
+- Test hardware-targeted checkpoints like FP8 or INT4 only when they are truly compatible with the target GPU and runtime.
+- If no packaged FP8 checkpoint exists, treat FP8 conversion as its own branch instead of skipping it outright. Try runtime-supported library flows such as TensorRT Model Optimizer, Transformer Engine, torchao float8, or llm-compressor before custom kernel work.
+- Treat alternate packaged runtimes as first-class candidates, not as footnotes after kernel work.
 
 ## Low-Hanging Runtime Pass
 
@@ -69,8 +77,9 @@ Do not stop at the first positive delta. Build a candidate ladder, test every ap
 ## Precision And Quantization Pass
 
 - On Ampere and Ada, test fp16, bf16, AWQ or INT4, and KV-cache changes before chasing native FP8 or NVFP4.
-- On Hopper, test FP8 before more speculative low-precision branches.
-- On Blackwell, FP8 comes before NVFP4 or block-scaled FP4.
+- On Hopper, test FP8 before more speculative low-precision branches. If no packaged FP8 artifact exists, attempt calibrated FP8 conversion with Model Optimizer, Transformer Engine, torchao, or llm-compressor when the runtime supports it.
+- On Blackwell, FP8 comes before NVFP4 or block-scaled FP4, and synthesized FP8 should be evaluated before more custom kernels when the software stack supports it.
+- Treat FP8 conversion as an explicit candidate family with calibration, quality validation, and fallback rules, not as a note that depends on pre-quantized checkpoints.
 - Skip unsupported precision branches explicitly and record why they were not tested.
 
 ## Compile And Graph Pass
@@ -88,5 +97,7 @@ Do not stop at the first positive delta. Build a candidate ladder, test every ap
 ## Promotion Rule
 
 - Keep one current best candidate at all times.
+- Compare steady-state normalized metrics like `rtf`, `x_real_time`, or tokens per second when model families or output lengths differ.
+- Keep compile, download, and warmup overhead separate from steady-state generation speed.
 - If a new candidate is slower, less stable, or numerically worse, fall back immediately.
 - End the search only after every applicable family has been tested, rejected with evidence, or blocked by the environment.
