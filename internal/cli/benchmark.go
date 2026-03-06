@@ -190,23 +190,61 @@ func printComparisonLine(cmd *cobra.Command, key string, before, after float64) 
 
 	delta := after - before
 	deltaPct := (delta / before) * 100
-	if lowerIsBetter(key) {
+	switch metricPreferenceForKey(key) {
+	case metricPreferenceLowerBetter:
 		speedup := before / after
 		cmd.Printf("- %s: %.4f -> %.4f (delta %.2f%%, speedup %.2fx, lower is better)\n", key, before, after, deltaPct, speedup)
 		return
+	case metricPreferenceHigherBetter:
+		speedup := after / before
+		cmd.Printf("- %s: %.4f -> %.4f (delta %.2f%%, speedup %.2fx, higher is better)\n", key, before, after, deltaPct, speedup)
+		return
+	default:
+		cmd.Printf("- %s: %.4f -> %.4f (delta %.2f%%, contextual metric)\n", key, before, after, deltaPct)
+		return
 	}
-
-	speedup := after / before
-	cmd.Printf("- %s: %.4f -> %.4f (delta %.2f%%, speedup %.2fx, higher is better)\n", key, before, after, deltaPct, speedup)
 }
 
 func lowerIsBetter(key string) bool {
-	key = strings.ToLower(key)
-	return strings.Contains(key, "latency") ||
+	return metricPreferenceForKey(key) == metricPreferenceLowerBetter
+}
+
+type metricPreference int
+
+const (
+	metricPreferenceNeutral metricPreference = iota
+	metricPreferenceLowerBetter
+	metricPreferenceHigherBetter
+)
+
+func metricPreferenceForKey(key string) metricPreference {
+	key = strings.ToLower(strings.TrimSpace(key))
+	switch key {
+	case "audio_s", "sample_rate", "samples", "runs":
+		return metricPreferenceNeutral
+	case "rtf", "gen_s", "load_s", "total_s":
+		return metricPreferenceLowerBetter
+	case "x_real_time", "tokens_per_sec", "throughput", "samples_per_sec":
+		return metricPreferenceHigherBetter
+	}
+
+	if strings.Contains(key, "latency") ||
 		strings.Contains(key, "time") ||
-		strings.Contains(key, "_ms") ||
+		strings.HasSuffix(key, "_ms") ||
 		strings.Contains(key, "memory") ||
-		strings.Contains(key, "bytes")
+		strings.Contains(key, "bytes") ||
+		strings.HasSuffix(key, "_s") {
+		return metricPreferenceLowerBetter
+	}
+	if strings.Contains(key, "throughput") ||
+		strings.Contains(key, "tokens_per_sec") ||
+		strings.Contains(key, "samples_per_sec") ||
+		strings.Contains(key, "utilization") ||
+		strings.Contains(key, "occupancy") ||
+		strings.Contains(key, "x_real_time") {
+		return metricPreferenceHigherBetter
+	}
+	return metricPreferenceNeutral
 }
 
 func commonMetricKeys(left, right map[string]float64) []string {

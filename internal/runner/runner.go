@@ -221,17 +221,15 @@ func sshCommand(ctx context.Context, target config.TargetConfig, command string,
 	if err != nil {
 		return nil, err
 	}
-	remoteScript := `exec sh -lc "$1"`
-	if envScript != "" {
-		remoteScript = envScript + remoteScript
-	}
-	args = append(args, destination, "sh", "-lc")
+
+	remoteScript := envScript + "exec sh -lc " + shellQuote(command)
 	if remoteDir != "" {
-		remoteScript = envScript + `mkdir -p "$1" && cd "$1" && exec sh -lc "$2"`
-		args = append(args, remoteScript, "fusion-remote", remoteDir, command)
-	} else {
-		args = append(args, remoteScript, "fusion-remote", command)
+		remoteScript = envScript +
+			"mkdir -p " + shellQuote(remoteDir) +
+			" && cd " + shellQuote(remoteDir) +
+			" && exec sh -lc " + shellQuote(command)
 	}
+	args = append(args, destination, remoteScript)
 	return exec.CommandContext(ctx, "ssh", args...), nil
 }
 

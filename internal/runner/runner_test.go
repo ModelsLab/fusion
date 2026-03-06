@@ -88,11 +88,11 @@ func TestBuildCommandForSSHIncludesDestinationAndRemoteDir(t *testing.T) {
 	if !strings.Contains(args, "ubuntu@example.com") {
 		t.Fatalf("expected ssh destination in args, got %q", args)
 	}
-	if !strings.Contains(args, `mkdir -p "$1" && cd "$1" && exec sh -lc "$2"`) || !strings.Contains(args, "/opt/fusion work") {
-		t.Fatalf("expected remote dir bootstrap with positional args, got %q", args)
+	if !strings.Contains(args, "mkdir -p '/opt/fusion work' && cd '/opt/fusion work' && exec sh -lc 'printf hi'") {
+		t.Fatalf("expected quoted remote dir bootstrap, got %q", args)
 	}
 	if strings.Contains(args, "printf hi &&") {
-		t.Fatalf("expected raw command to be passed as an argument, got %q", args)
+		t.Fatalf("expected command to be shell-quoted in ssh args, got %q", args)
 	}
 }
 
@@ -111,6 +111,9 @@ func TestBuildCommandForSSHIncludesEnvironmentExports(t *testing.T) {
 	args := strings.Join(command.Args, " ")
 	if !strings.Contains(args, "export HF_TOKEN='hf-secret';") {
 		t.Fatalf("expected ssh args to export HF_TOKEN, got %q", args)
+	}
+	if !strings.Contains(args, `exec sh -lc 'printf %s "$HF_TOKEN"'`) {
+		t.Fatalf("expected command to be shell-quoted in ssh args, got %q", args)
 	}
 }
 

@@ -15,6 +15,9 @@ func ParseMetrics(text string) map[string]float64 {
 	if metrics := parseJSONMetrics(text); len(metrics) > 0 {
 		return metrics
 	}
+	if metrics := parseJSONMetricsLines(text); len(metrics) > 0 {
+		return metrics
+	}
 
 	return parseKeyValueMetrics(text)
 }
@@ -30,11 +33,23 @@ func parseJSONMetrics(text string) map[string]float64 {
 		switch typed := value.(type) {
 		case float64:
 			metrics[key] = typed
-		case int:
-			metrics[key] = float64(typed)
 		}
 	}
 	return metrics
+}
+
+func parseJSONMetricsLines(text string) map[string]float64 {
+	lines := strings.Split(text, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(line, "{") || !strings.HasSuffix(line, "}") {
+			continue
+		}
+		if metrics := parseJSONMetrics(line); len(metrics) > 0 {
+			return metrics
+		}
+	}
+	return nil
 }
 
 func parseKeyValueMetrics(text string) map[string]float64 {
