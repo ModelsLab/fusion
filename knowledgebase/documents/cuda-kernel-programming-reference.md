@@ -1310,6 +1310,299 @@ nvtxRangePop();
 
 ---
 
+## Practical CUDA Recipes
+
+### Recipe 1: Compile and Run Your First CUDA Kernel
+
+**vector_add.cu:**
+
+```cuda
+#include <cstdio>
+
+__global__ void vector_add(const float *a, const float *b, float *c, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) c[i] = a[i] + b[i];
+}
+
+int main() {
+    const int N = 1024;
+    float *a, *b, *c;
+    cudaMallocManaged(&a, N * sizeof(float));
+    cudaMallocManaged(&b, N * sizeof(float));
+    cudaMallocManaged(&c, N * sizeof(float));
+    for (int i = 0; i < N; i++) { a[i] = i; b[i] = i * 2; }
+    vector_add<<<(N + 255) / 256, 256>>>(a, b, c, N);
+    cudaDeviceSynchronize();
+    printf("c[0]=%.0f c[1023]=%.0f\n", c[0], c[1023]);  // 0, 3069
+    cudaFree(a); cudaFree(b); cudaFree(c);
+}
+```
+
+**CMakeLists.txt:**
+
+```cmake
+cmake_minimum_required(VERSION 3.18)
+project(vector_add LANGUAGES CUDA)
+set(CMAKE_CUDA_STANDARD 17)
+add_executable(vector_add vector_add.cu)
+```
+
+**Build and run:**
+
+```bash
+cmake -B build && cmake --build build
+./build/vector_add
+# Output: c[0]=0 c[1023]=3069
+```
+
+### Recipe 2: Build a CUDA Extension for PyTorch
+
+**Option A: setuptools-based build**
+
+**setup.py:**
+
+```python
+from setuptools import setup
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+
+setup(
+    name="my_cuda_ops",
+    ext_modules=[
+        CUDAExtension("my_cuda_ops", [
+            "binding.cpp",
+            "elementwise_mul.cu",
+        ])
+    ],
+    cmdclass={"build_ext": BuildExtension},
+)
+```
+
+**elementwise_mul.cu:**
+
+```cuda
+#include <torch/extension.h>
+
+__global__ void elementwise_mul_kernel(const float *a, const float *b, float *out, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = a[i] * b[i];
+}
+
+torch::Tensor elementwise_mul(torch::Tensor a, torch::Tensor b) {
+    TORCH_CHECK(a.is_cuda() && b.is_cuda(), "Inputs must be CUDA tensors");
+    auto out = torch::empty_like(a);
+    int n = a.numel();
+    elementwise_mul_kernel<<<(n + 255) / 256, 256>>>(
+        a.data_ptr<float>(), b.data_ptr<float>(), out.data_ptr<float>(), n);
+    return out;
+}
+```
+
+**binding.cpp:**
+
+```cpp
+#include <torch/extension.h>
+
+torch::Tensor elementwise_mul(torch::Tensor a, torch::Tensor b);
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("elementwise_mul", &elementwise_mul, "Element-wise multiply (CUDA)");
+}
+```
+
+**Build and test:**
+
+```bash
+pip install -e .
+```
+
+```python
+import torch, my_cuda_ops
+a = torch.randn(1024, device="cuda")
+b = torch.randn(1024, device="cuda")
+c = my_cuda_ops.elementwise_mul(a, b)
+assert torch.allclose(c, a * b)
+print("PASSED")
+```
+
+**Option B: JIT compilation (no setup.py needed)**
+
+```python
+from torch.utils.cpp_extension import load
+my_cuda_ops = load(name="my_cuda_ops", sources=["binding.cpp", "elementwise_mul.cu"])
+c = my_cuda_ops.elementwise_mul(a, b)
+```
+
+This compiles on first call and caches the result. Ideal for prototyping; switch to setuptools for distribution.
+
+### Recipe 3: Profile Your CUDA Kernel
+
+**Compile with debug info (preserves line correlation without sacrificing performance):**
+
+```bash
+nvcc -lineinfo -O2 kernel.cu -o kernel
+```
+
+**Profile with Nsight Compute (kernel-level metrics):**
+
+```bash
+# Full analysis -- generates a report file you can open in the GUI
+ncu --set full -o profile_report ./kernel
+
+# Quick check: are you compute-bound or memory-bound?
+ncu --metrics sm__throughput.avg_pct_of_peak_sustained_elapsed,gpu__dram_throughput.avg_pct_of_peak_sustained_elapsed ./kernel
+
+# Check memory access efficiency
+ncu --section MemoryWorkloadAnalysis ./kernel
+
+# Profile a specific kernel by name (useful when the app launches many kernels)
+ncu --kernel-name vector_add --launch-count 3 ./kernel
+```
+
+**How to interpret Nsight Compute output:**
+- **SOL% (Speed of Light)**: The percentage of peak hardware capability you are reaching. Above 80% means you are close to hardware limits. Below 40% means significant room for improvement.
+- **Compute SOL% high, Memory SOL% low**: Kernel is compute-bound. Consider using lower precision (fp16/bf16), reducing redundant math, or using Tensor Cores.
+- **Memory SOL% high, Compute SOL% low**: Kernel is memory-bound. Increase data reuse through tiling/shared memory, improve coalescing, or reduce total bytes moved.
+- **Both SOL% low**: Kernel is latency-bound (stalled). Check warp stall reasons, increase occupancy, or restructure to expose more parallelism.
+
+**Profile with Nsight Systems (application-level timeline):**
+
+```bash
+# Full timeline with CUDA API tracing
+nsys profile --stats=true -o timeline ./kernel
+
+# With NVTX annotations and OS runtime tracing
+nsys profile --trace=cuda,nvtx,osrt --stats=true ./kernel
+
+# Export summary statistics to console
+nsys stats timeline.nsys-rep
+```
+
+**How to interpret Nsight Systems output:**
+- **Timeline view**: Look for gaps between kernels (CPU overhead), serialized kernel launches (missing stream concurrency), and idle GPU periods.
+- **`--stats=true` summary**: Shows top kernels by duration, CUDA API call counts, and memory transfer sizes. Focus optimization on the kernels consuming the most total GPU time.
+- **Memory transfers**: H2D/D2H copies that do not overlap with kernel execution are wasted concurrency opportunities. Use pinned memory and multiple streams to overlap.
+
+### Recipe 4: Debug CUDA Errors
+
+**Enable synchronous error checking (makes CUDA errors point to the correct kernel):**
+
+```bash
+# Python / PyTorch
+CUDA_LAUNCH_BLOCKING=1 python my_script.py
+
+# This forces synchronous kernel launches so the error is reported
+# at the correct call site instead of at a later cudaDeviceSynchronize().
+```
+
+**Keep device-side assertions active:**
+
+```bash
+# Do NOT define NDEBUG if you want assert() to fire on the GPU
+nvcc -O2 kernel.cu -o kernel          # assertions active by default
+nvcc -DNDEBUG kernel.cu -o kernel     # assertions DISABLED -- avoid during debugging
+```
+
+**Check for memory errors and race conditions:**
+
+```bash
+# Memory error checker (out-of-bounds, misaligned access, use-after-free)
+compute-sanitizer --tool memcheck ./kernel
+
+# Race condition checker (shared memory data races)
+compute-sanitizer --tool racecheck ./kernel
+
+# Uninitialized memory checker
+compute-sanitizer --tool initcheck ./kernel
+
+# Synchronization checker (barrier misuse, illegal synchronization)
+compute-sanitizer --tool synccheck ./kernel
+```
+
+**Add inline error checking in C++ code:**
+
+```c
+#define CUDA_CHECK(call)                                                       \
+    do {                                                                       \
+        cudaError_t err = (call);                                              \
+        if (err != cudaSuccess) {                                              \
+            fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__,  \
+                    cudaGetErrorString(err));                                   \
+            exit(1);                                                           \
+        }                                                                      \
+    } while (0)
+
+// Usage:
+CUDA_CHECK(cudaMalloc(&d_ptr, size));
+my_kernel<<<grid, block>>>(d_ptr);
+CUDA_CHECK(cudaGetLastError());            // Check launch errors
+CUDA_CHECK(cudaDeviceSynchronize());       // Check execution errors
+```
+
+### Common CUDA Errors Quick Reference
+
+| Error Message | Cause | Fix |
+|---|---|---|
+| `illegal memory access was encountered` | Out-of-bounds global/shared memory read or write | Check array indices against allocation size; verify grid/block dimensions produce valid indices |
+| `too many resources requested for launch` | Kernel uses more registers or shared memory than the SM can provide for the requested block size | Reduce threads per block, use `__launch_bounds__(maxThreads, minBlocks)`, or add `-maxrregcount=N` to nvcc |
+| `misaligned address` | Pointer not aligned to the size of the data type being accessed | Ensure allocations and pointer arithmetic maintain natural alignment (4 bytes for float, 8 for double) |
+| `an illegal instruction was encountered` | Binary compiled for wrong compute capability, or corrupted binary | Recompile with correct `-arch=sm_XX` matching your GPU |
+| `no kernel image is available for execution on the device` | No compatible cubin or PTX embedded for the target GPU | Add `-gencode arch=compute_XX,code=sm_XX` for your GPU, or embed PTX with `code=compute_XX` |
+| `out of memory` | GPU memory exhausted | Reduce batch size, use gradient checkpointing, free unused tensors, or use `torch.cuda.empty_cache()` |
+| `device-side assert triggered` | An `assert()` in device code evaluated to false | Run with `CUDA_LAUNCH_BLOCKING=1` to identify the kernel; check your assert condition logic |
+| `unspecified launch failure` | Generic error often caused by illegal memory access or assertion in older CUDA versions | Use `compute-sanitizer --tool memcheck` to identify the root cause |
+| `invalid device function` | Kernel was not compiled for the current device architecture | Check `-arch` flag; ensure the `.cu` file containing the kernel is actually compiled |
+| `invalid configuration argument` | Bad launch parameters (e.g., 0 threads, block size > 1024, shared memory > limit) | Verify `<<<grid, block, sharedMem>>>` arguments; block size max is 1024 threads |
+| `CUBLAS_STATUS_EXECUTION_FAILED` | A cuBLAS kernel failed (often due to NaN/Inf inputs or wrong dimensions) | Check input tensor shapes and values; run with `CUDA_LAUNCH_BLOCKING=1` |
+| `NCCL error: unhandled system error` | Multi-GPU communication failure (network, driver, or topology issue) | Check `NCCL_DEBUG=INFO` output, verify NVLink/PCIe topology, update NCCL version |
+| `all CUDA-capable devices are busy or unavailable` | GPU is in exclusive mode or driver issue | Check `nvidia-smi` for process locks; restart with `sudo nvidia-smi -pm 1` |
+
+### CUDA Compilation Cheat Sheet
+
+```bash
+# ---- Target Architecture ----
+nvcc -arch=sm_80       # Target Ampere (A100, A10, RTX 3090)
+nvcc -arch=sm_86       # Target Ampere consumer (RTX 3060/3070/3080)
+nvcc -arch=sm_89       # Target Ada Lovelace (RTX 4090, L40)
+nvcc -arch=sm_90       # Target Hopper (H100)
+nvcc -arch=sm_90a      # Target Hopper with architecture-specific features (WGMMA, TMA)
+nvcc -arch=sm_100      # Target Blackwell (B200)
+
+# ---- Multi-Target Fat Binary ----
+nvcc -gencode arch=compute_80,code=sm_80 \
+     -gencode arch=compute_89,code=sm_89 \
+     -gencode arch=compute_90,code=sm_90 \
+     -gencode arch=compute_90,code=compute_90 \  # Embed PTX for JIT on future GPUs
+     kernel.cu -o kernel
+
+# ---- Optimization Flags ----
+nvcc -O3               # Full optimization (default for release builds)
+nvcc -O0 -G            # Debug mode: no optimization, device-level debugging with cuda-gdb
+nvcc -lineinfo         # Add source line info for profiling (minimal perf impact -- always use)
+nvcc --use_fast_math   # Replace math functions with faster, less precise intrinsics
+                       # Enables __fmul_rn -> __fmul_rz, disables denormals, etc.
+                       # WARNING: changes numerical results; validate correctness first
+nvcc --ftz=true        # Flush denormals to zero (subset of --use_fast_math)
+nvcc --fmad=true       # Enable fused multiply-add (default: true)
+
+# ---- Register and Occupancy Control ----
+nvcc -maxrregcount=64  # Limit registers per thread to 64 (increases occupancy at cost of spilling)
+nvcc -maxrregcount=32  # Aggressive limit -- high occupancy but may cause register spilling to local memory
+# Prefer __launch_bounds__ in source code for per-kernel control:
+#   __global__ void __launch_bounds__(256, 2) my_kernel(...)  // max 256 threads, min 2 blocks/SM
+
+# ---- Separate Compilation (required for dynamic parallelism, cross-file __device__ calls) ----
+nvcc -dc file1.cu -o file1.o       # Compile to relocatable device code
+nvcc -dc file2.cu -o file2.o
+nvcc file1.o file2.o -o app        # Link step resolves cross-file device symbols
+
+# ---- Useful Diagnostics ----
+nvcc --resource-usage kernel.cu -o kernel   # Print register and shared memory usage per kernel
+nvcc --ptxas-options=-v kernel.cu           # Verbose PTX assembler output (same info)
+nvcc -Xcompiler -Wall kernel.cu             # Pass warnings flag to host compiler
+```
+
+---
+
 ## Sources
 
 - [Using Shared Memory in CUDA C/C++ -- NVIDIA Blog](https://developer.nvidia.com/blog/using-shared-memory-cuda-cc/)

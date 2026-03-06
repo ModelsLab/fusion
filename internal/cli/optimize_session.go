@@ -23,6 +23,8 @@ func newOptimizeSessionCommand() *cobra.Command {
 		newOptimizeSessionCreateCommand(),
 		newOptimizeSessionListCommand(),
 		newOptimizeSessionShowCommand(),
+		newOptimizeSessionGateCommand(),
+		newOptimizeSessionDecisionCommand(),
 	)
 
 	return cmd
@@ -236,6 +238,78 @@ func newOptimizeSessionShowCommand() *cobra.Command {
 
 	cmd.Flags().StringVar(&id, "id", "", "optimization session id")
 	cmd.MarkFlagRequired("id")
+	return cmd
+}
+
+func newOptimizeSessionGateCommand() *cobra.Command {
+	var id string
+
+	cmd := &cobra.Command{
+		Use:   "gate",
+		Short: "Show whether the outer loop is exhausted and the inner kernel loop is ready to start",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			session, _, err := loadOptimizationSession(id)
+			if err != nil {
+				return err
+			}
+			status := optimize.EvaluateOuterLoopStatus(session)
+			cmd.Printf("session: %s\n", session.ID)
+			cmd.Printf("outer_loop_exhausted: %t\n", status.Exhausted)
+			cmd.Printf("ready_for_inner_loop: %t\n", status.ReadyForInnerLoop)
+			cmd.Printf("current_best: %s\n", valueOrFallback(status.CurrentBestID, "unset"))
+			cmd.Println("families")
+			for _, family := range status.Families {
+				cmd.Printf("- %s: %s\n", family.Family, family.Status)
+				if family.Reason != "" {
+					cmd.Printf("  reason: %s\n", family.Reason)
+				}
+				if len(family.CandidateIDs) > 0 {
+					cmd.Printf("  candidates: %s\n", strings.Join(family.CandidateIDs, ", "))
+				}
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&id, "id", "", "optimization session id")
+	cmd.MarkFlagRequired("id")
+	return cmd
+}
+
+func newOptimizeSessionDecisionCommand() *cobra.Command {
+	var id string
+	var phase string
+	var family string
+	var status string
+	var reason string
+	var candidateID string
+
+	cmd := &cobra.Command{
+		Use:   "decide",
+		Short: "Record an explicit outer-loop or inner-loop decision for orchestration and gating",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			session, store, err := loadOptimizationSession(id)
+			if err != nil {
+				return err
+			}
+			session.RecordLoopDecision(phase, family, status, candidateID, reason)
+			if _, err := store.Save(session); err != nil {
+				return err
+			}
+			cmd.Printf("Recorded %s decision for %s: %s\n", phase, family, status)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&id, "id", "", "optimization session id")
+	cmd.Flags().StringVar(&phase, "phase", "outer", "loop phase, for example outer or inner")
+	cmd.Flags().StringVar(&family, "family", "", "decision family like baseline, model-family, runtime, quantization, compile, or attention-backend")
+	cmd.Flags().StringVar(&status, "status", "", "decision status like tested, blocked, skipped, regressed, or winner")
+	cmd.Flags().StringVar(&reason, "reason", "", "human-readable reason for the decision")
+	cmd.Flags().StringVar(&candidateID, "candidate", "", "optional candidate id associated with the decision")
+	cmd.MarkFlagRequired("id")
+	cmd.MarkFlagRequired("family")
+	cmd.MarkFlagRequired("status")
 	return cmd
 }
 

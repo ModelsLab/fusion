@@ -460,3 +460,374 @@ This is why:
 | FP8 attention | FlashAttention-3 | Native FP8 on Hopper |
 | Blackwell | cuTile attention (CUTLASS) | Fifth-gen tensor cores |
 | Variable-length batch | FlashInfer (ragged) | No padding needed |
+
+## Practical Attention Recipes
+
+### Recipe 1: Use FlashAttention in PyTorch (3 Ways)
+
+```python
+import torch
+import time
+
+# Setup: common inputs for all methods
+B, H, S, D = 4, 32, 4096, 128
+device = "cuda"
+dtype = torch.float16
+
+Q = torch.randn(B, H, S, D, device=device, dtype=dtype)
+K = torch.randn(B, H, S, D, device=device, dtype=dtype)
+V = torch.randn(B, H, S, D, device=device, dtype=dtype)
+
+def benchmark(fn, name, warmup=10, iters=100):
+    for _ in range(warmup):
+        fn()
+    torch.cuda.synchronize()
+    start = time.perf_counter()
+    for _ in range(iters):
+        fn()
+    torch.cuda.synchronize()
+    elapsed = (time.perf_counter() - start) / iters * 1000
+    print(f"{name}: {elapsed:.2f} ms")
+
+
+# --------------------------------------------------------------------------
+# Method 1: torch.nn.functional.scaled_dot_product_attention (built-in, easiest)
+# --------------------------------------------------------------------------
+# Available since PyTorch 2.0. Automatically selects the best backend
+# (FlashAttention, Memory-Efficient, or Math) based on inputs and hardware.
+import torch.nn.functional as F
+
+def method1():
+    return F.scaled_dot_product_attention(Q, K, V, is_causal=True)
+
+benchmark(method1, "SDPA (auto backend)")
+
+
+# --------------------------------------------------------------------------
+# Method 2: flash_attn package (fastest, pip install flash-attn --no-build-isolation)
+# --------------------------------------------------------------------------
+# Requires Ampere+ GPU. Inputs must be (B, S, H, D) layout, not (B, H, S, D).
+from flash_attn import flash_attn_func
+
+Q_flash = Q.transpose(1, 2).contiguous()  # (B, S, H, D)
+K_flash = K.transpose(1, 2).contiguous()
+V_flash = V.transpose(1, 2).contiguous()
+
+def method2():
+    return flash_attn_func(Q_flash, K_flash, V_flash, causal=True)
+
+benchmark(method2, "flash-attn package")
+
+
+# --------------------------------------------------------------------------
+# Method 3: xformers (pip install xformers)
+# --------------------------------------------------------------------------
+# Supports a wider range of GPUs including Turing (T4).
+from xformers.ops import memory_efficient_attention
+from xformers.ops import LowerTriangularMask
+
+Q_xf = Q.transpose(1, 2)  # (B, S, H, D)
+K_xf = K.transpose(1, 2)
+V_xf = V.transpose(1, 2)
+
+def method3():
+    return memory_efficient_attention(Q_xf, K_xf, V_xf, attn_bias=LowerTriangularMask())
+
+benchmark(method3, "xformers")
+
+
+# --------------------------------------------------------------------------
+# Typical results (A100 80GB, S=4096, D=128, FP16, causal):
+#   SDPA (auto backend):  ~3.1 ms  (selects flash backend internally)
+#   flash-attn package:   ~2.8 ms  (fastest, minimal overhead)
+#   xformers:             ~3.0 ms  (close to flash-attn)
+#
+# At S=16384:
+#   SDPA:                 ~48 ms
+#   flash-attn:           ~44 ms
+#   xformers:             ~46 ms
+# --------------------------------------------------------------------------
+```
+
+### Recipe 2: Check Which Attention Backend is Active
+
+```python
+import torch
+import torch.nn.functional as F
+
+B, H, S, D = 2, 8, 1024, 64
+Q = torch.randn(B, H, S, D, device="cuda", dtype=torch.float16)
+K = torch.randn(B, H, S, D, device="cuda", dtype=torch.float16)
+V = torch.randn(B, H, S, D, device="cuda", dtype=torch.float16)
+
+# --- Detect which backend SDPA would select ---
+from torch.backends.cuda import (
+    flash_sdp_enabled,
+    mem_efficient_sdp_enabled,
+    math_sdp_enabled,
+)
+
+print(f"Flash SDP available:            {flash_sdp_enabled()}")
+print(f"Memory-efficient SDP available: {mem_efficient_sdp_enabled()}")
+print(f"Math SDP available:             {math_sdp_enabled()}")
+
+
+# --- Force a specific backend using the context manager ---
+from torch.nn.attention import sdpa_kernel, SDPBackend
+
+# Force FlashAttention only
+with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+    out_flash = F.scaled_dot_product_attention(Q, K, V, is_causal=True)
+    print("Forced FlashAttention backend")
+
+# Force memory-efficient (xformers-like) only
+with sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION):
+    out_efficient = F.scaled_dot_product_attention(Q, K, V, is_causal=True)
+    print("Forced Memory-Efficient backend")
+
+# Force math (unfused) backend -- slow but always works
+with sdpa_kernel(SDPBackend.MATH):
+    out_math = F.scaled_dot_product_attention(Q, K, V, is_causal=True)
+    print("Forced Math backend")
+
+# Force CuDNN attention (PyTorch 2.2+, Hopper)
+# with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
+#     out_cudnn = F.scaled_dot_product_attention(Q, K, V, is_causal=True)
+
+
+# --- Verify with profiling (most reliable method) ---
+# Run with: python -m torch.utils.bottleneck your_script.py
+# Or use the PyTorch profiler:
+with torch.profiler.profile(
+    activities=[torch.profiler.ProfilerActivity.CUDA],
+) as prof:
+    F.scaled_dot_product_attention(Q, K, V, is_causal=True)
+
+# Look for kernel names:
+#   "flash_fwd"            -> FlashAttention
+#   "efficient_attention"  -> Memory-Efficient
+#   "sdp_math"             -> Math fallback
+for event in prof.key_averages():
+    if "attention" in event.key.lower() or "flash" in event.key.lower() or "sdp" in event.key.lower():
+        print(f"  Kernel: {event.key}  CUDA time: {event.cuda_time_total:.0f} us")
+```
+
+### Recipe 3: FlashAttention Installation Troubleshooting
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `No module named 'flash_attn'` | Package not installed | `pip install flash-attn --no-build-isolation` |
+| `FlashAttention only supports Ampere GPUs or newer` | GPU compute capability < 8.0 (e.g., T4, V100) | Use `xformers` or the SDPA math backend instead |
+| Build fails with `nvcc fatal: Unsupported gpu architecture` | CUDA toolkit too old for your GPU or missing arch flag | Install CUDA toolkit >= 11.6; for Ada/Hopper ensure >= 11.8 |
+| `RuntimeError: FlashAttention does not support head_dim > 256` | Head dimension exceeds kernel limit | Reshape to split heads: `(B, H, S, 512)` -> `(B, 2*H, S, 256)` |
+| `No matching distribution found for flash-attn` | Python version or platform mismatch | Use Python 3.8-3.11 on Linux x86_64; flash-attn has no macOS/Windows wheels |
+| `error: subprocess-exited-with-error` during build | Missing build dependencies or ninja | `pip install packaging ninja setuptools wheel` then retry |
+| `torch.cuda.OutOfMemoryError` during import/first call | GPU memory fragmented or near-full | Free other tensors; set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` |
+| `undefined symbol: _ZN2at...` | flash-attn built against different PyTorch version | Reinstall: `pip install flash-attn --no-build-isolation --force-reinstall` matching your PyTorch |
+| `CUDA driver version is insufficient` | System NVIDIA driver too old | Update NVIDIA driver to >= 525.60 for CUDA 12.x support |
+
+**Quick compatibility check:**
+
+```python
+import torch
+print(f"PyTorch:          {torch.__version__}")
+print(f"CUDA available:   {torch.cuda.is_available()}")
+print(f"CUDA version:     {torch.version.cuda}")
+print(f"GPU:              {torch.cuda.get_device_name(0)}")
+print(f"Compute cap:      {torch.cuda.get_device_capability(0)}")
+
+cap = torch.cuda.get_device_capability(0)
+if cap >= (8, 0):
+    print("-> FlashAttention-2 supported (Ampere+)")
+if cap >= (9, 0):
+    print("-> FlashAttention-3 supported (Hopper+)")
+if cap < (8, 0):
+    print("-> Use xformers or SDPA math/efficient backend")
+```
+
+### Recipe 4: Measure Attention Performance
+
+```python
+import torch
+import torch.nn.functional as F
+from torch.nn.attention import sdpa_kernel, SDPBackend
+import time
+import json
+
+def measure_attention(B, H, S, D, backend, causal=True, warmup=20, iters=100):
+    """Measure latency and peak memory for a given attention backend."""
+    Q = torch.randn(B, H, S, D, device="cuda", dtype=torch.float16)
+    K = torch.randn(B, H, S, D, device="cuda", dtype=torch.float16)
+    V = torch.randn(B, H, S, D, device="cuda", dtype=torch.float16)
+
+    torch.cuda.reset_peak_memory_stats()
+    mem_before = torch.cuda.max_memory_allocated()
+
+    try:
+        with sdpa_kernel(backend):
+            # Warmup
+            for _ in range(warmup):
+                _ = F.scaled_dot_product_attention(Q, K, V, is_causal=causal)
+            torch.cuda.synchronize()
+
+            # Timed run
+            start = time.perf_counter()
+            for _ in range(iters):
+                _ = F.scaled_dot_product_attention(Q, K, V, is_causal=causal)
+            torch.cuda.synchronize()
+            elapsed_ms = (time.perf_counter() - start) / iters * 1000
+
+        mem_after = torch.cuda.max_memory_allocated()
+        mem_delta_mb = (mem_after - mem_before) / 1024**2
+        return {"latency_ms": round(elapsed_ms, 3), "peak_mem_mb": round(mem_delta_mb, 1)}
+
+    except RuntimeError as e:
+        return {"latency_ms": None, "peak_mem_mb": None, "error": str(e)[:80]}
+
+
+# --- Benchmark across sequence lengths ---
+backends = {
+    "Flash":     SDPBackend.FLASH_ATTENTION,
+    "Efficient": SDPBackend.EFFICIENT_ATTENTION,
+    "Math":      SDPBackend.MATH,
+}
+
+seq_lengths = [512, 1024, 2048, 4096, 8192, 16384]
+B, H, D = 4, 32, 128
+
+results = {}
+for name, backend in backends.items():
+    results[name] = {}
+    for S in seq_lengths:
+        r = measure_attention(B, H, S, D, backend)
+        results[name][S] = r
+        status = f"{r['latency_ms']:.2f} ms, {r['peak_mem_mb']:.0f} MB" if r["latency_ms"] else r.get("error", "N/A")
+        print(f"{name:>10} | S={S:>6} | {status}")
+    torch.cuda.empty_cache()
+
+# --- Plot results (requires matplotlib) ---
+try:
+    import matplotlib.pyplot as plt
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    for name in backends:
+        seqs = [s for s in seq_lengths if results[name][s]["latency_ms"] is not None]
+        lats = [results[name][s]["latency_ms"] for s in seqs]
+        mems = [results[name][s]["peak_mem_mb"] for s in seqs]
+
+        ax1.plot(seqs, lats, marker="o", label=name)
+        ax2.plot(seqs, mems, marker="s", label=name)
+
+    ax1.set_xlabel("Sequence Length")
+    ax1.set_ylabel("Latency (ms)")
+    ax1.set_title("Attention Latency vs Sequence Length")
+    ax1.set_xscale("log", base=2)
+    ax1.set_yscale("log", base=10)
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    ax2.set_xlabel("Sequence Length")
+    ax2.set_ylabel("Peak Memory (MB)")
+    ax2.set_title("Attention Memory vs Sequence Length")
+    ax2.set_xscale("log", base=2)
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig("attention_benchmark.png", dpi=150)
+    print("Plot saved to attention_benchmark.png")
+except ImportError:
+    print("Install matplotlib to generate plots: pip install matplotlib")
+    print("Raw results:")
+    print(json.dumps(results, indent=2))
+```
+
+### Recipe 5: Enable FlashAttention in vLLM/SGLang
+
+**vLLM: Attention Backend Selection**
+
+```bash
+# vLLM automatically selects the best attention backend.
+# Override with the VLLM_ATTENTION_BACKEND environment variable:
+
+# Use FlashAttention (default on Ampere+)
+VLLM_ATTENTION_BACKEND=FLASH_ATTN vllm serve meta-llama/Llama-3.1-8B-Instruct
+
+# Use FlashInfer (recommended for decode-heavy workloads)
+VLLM_ATTENTION_BACKEND=FLASHINFER vllm serve meta-llama/Llama-3.1-8B-Instruct
+
+# Use xformers (wider GPU compatibility)
+VLLM_ATTENTION_BACKEND=XFORMERS vllm serve meta-llama/Llama-3.1-8B-Instruct
+
+# Verify in startup logs -- look for:
+#   "Using attention backend: FLASH_ATTN"
+#   or "Using attention backend: FLASHINFER"
+```
+
+**SGLang: FlashInfer Configuration**
+
+```bash
+# SGLang uses FlashInfer by default for attention kernels.
+
+# Launch with default FlashInfer attention:
+python -m sglang.launch_server --model meta-llama/Llama-3.1-8B-Instruct
+
+# Explicitly set attention backend:
+python -m sglang.launch_server \
+    --model meta-llama/Llama-3.1-8B-Instruct \
+    --attention-backend flashinfer
+
+# Use triton backend instead (useful for debugging or unsupported configs):
+python -m sglang.launch_server \
+    --model meta-llama/Llama-3.1-8B-Instruct \
+    --attention-backend triton
+
+# Verify FlashInfer is active -- check startup logs for:
+#   "Attention backend: flashinfer"
+#   "FlashInfer version: x.y.z"
+```
+
+**How to Verify the Attention Backend is Being Used**
+
+```bash
+# Method 1: Check server startup logs
+# vLLM prints: "Using attention backend: FLASH_ATTN"
+# SGLang prints: "Attention backend: flashinfer"
+
+# Method 2: Run with CUDA profiling
+nsys profile -o attn_trace python -m vllm.entrypoints.openai.api_server \
+    --model meta-llama/Llama-3.1-8B-Instruct &
+# Send a request, then Ctrl+C
+# Open in Nsight Systems and search for kernel names:
+#   "flash_fwd" = FlashAttention
+#   "BatchPrefillWithPagedKVCache" = FlashInfer
+#   "paged_attention" = vLLM PagedAttention
+
+# Method 3: Python-level check in vLLM
+python -c "
+from vllm import LLM
+llm = LLM(model='meta-llama/Llama-3.1-8B-Instruct', enforce_eager=True)
+print(llm.llm_engine.model_config.dtype)
+# Check logs output during initialization for backend info
+"
+```
+
+### When to Use Which Attention
+
+| Scenario | Best Choice | Why |
+|----------|-------------|-----|
+| Short sequences (<2K), any GPU | SDPA Math / Efficient | Low kernel launch overhead, no special requirements |
+| Long sequences (>4K), Ampere+ GPU | FlashAttention-2 | O(N) memory instead of O(N^2), no attention matrix materialization |
+| Hopper GPU (H100/H200) | FlashAttention-3 | Exploits TMA async copies and WGMMA tensor core instructions |
+| Paged KV cache in serving | FlashInfer (paged) | Native support for block tables and non-contiguous KV memory |
+| Variable-length batches | FlashInfer (ragged) | Packed tensor layout eliminates padding waste entirely |
+| Prefix caching (shared system prompts) | FlashInfer cascade | Computes shared-prefix attention once, merges per-request suffixes |
+| Decode-only (single token generation) | FlashDecoding / FlashInfer split-KV | Parallelizes across KV length to avoid thread block underutilization |
+| GQA models (LLaMA-3, Mistral) | FlashInfer or FlashAttention-2 | Both handle grouped-query natively with KV head broadcasting |
+| FP8 KV cache quantization | FlashAttention-3 / FlashInfer | Native FP8 dequantize-on-the-fly during attention |
+| Sliding window models (Mistral) | FlashInfer or custom kernel | Native window mask support, bounded KV cache |
+| Turing GPUs (T4, RTX 2080) | xformers or SDPA efficient | FlashAttention requires Ampere+; these work on compute cap 7.5 |
+| Training with custom attention bias | SDPA with `attn_mask` param | Flexible masking support; Flash backend handles causal/no mask |
+| Speculative decoding (draft + verify) | FlashInfer batch prefill | Efficiently handles mixed-length verification sequences |
+| Multi-node / tensor parallel | FlashAttention-2 + NCCL ring | Attention is local per-head; TP splits heads across GPUs |

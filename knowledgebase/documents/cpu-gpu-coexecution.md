@@ -234,3 +234,89 @@ llama.cpp on Apple Silicon:
 6. For KV cache: block-level granularity, not sequence-level
 7. Consider NVMe offloading for very large models (FlexGen)
 ```
+
+## Practical Offloading Recipes
+
+### Recipe 1: HuggingFace Accelerate Auto Device Map
+```bash
+pip install accelerate
+```
+```python
+# Automatically split model between GPU and CPU
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-3.1-70B-Instruct",
+    device_map="auto",           # auto-split across GPU + CPU
+    torch_dtype="bfloat16",
+    max_memory={0: "22GiB", "cpu": "100GiB"},  # limit per device
+)
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-70B-Instruct")
+
+# Check where each layer landed
+print(model.hf_device_map)
+# → {'model.embed_tokens': 0, 'model.layers.0': 0, ..., 'model.layers.60': 'cpu', ...}
+
+# Generate (slow for offloaded layers, but works)
+inputs = tokenizer("Hello, world!", return_tensors="pt").to("cuda")
+output = model.generate(**inputs, max_new_tokens=50)
+print(tokenizer.decode(output[0]))
+```
+
+### Recipe 2: llama.cpp Partial GPU Offloading
+```bash
+# Run 70B model on 24GB GPU: put 20 of 80 layers on GPU
+./llama-cli -m Llama-3.1-70B-Q4_K_M.gguf \
+  -ngl 20 \           # 20 layers on GPU (rest on CPU)
+  --threads 16 \       # CPU threads for remaining layers
+  -p "Explain quantum computing" \
+  -n 200
+
+# Finding optimal -ngl:
+# Start with -ngl 0 (all CPU), increase until GPU memory is ~90% full
+# Monitor with: nvidia-smi -l 1
+# Each layer for 70B Q4_K_M ≈ 0.5 GB → 20 layers ≈ 10 GB on GPU
+
+# Performance expectation (RTX 4090, 70B Q4_K_M):
+#   -ngl 0:  ~5 tokens/sec (pure CPU, i9-13900K)
+#   -ngl 20: ~12 tokens/sec (hybrid)
+#   -ngl 35: ~18 tokens/sec (most on GPU)
+#   -ngl 80: won't fit (needs ~35 GB, have 24 GB)
+```
+
+### Recipe 3: Check If Your Model Fits
+```python
+# Quick memory check before loading
+def will_it_fit(model_name, gpu_memory_gb, dtype="float16"):
+    from transformers import AutoConfig
+    config = AutoConfig.from_pretrained(model_name)
+
+    # Estimate parameter count
+    h = config.hidden_size
+    L = config.num_hidden_layers
+    V = config.vocab_size
+    I = getattr(config, 'intermediate_size', h * 4)
+    params_B = (L * (4*h*h + 3*h*I + 2*h) + 2*V*h) / 1e9
+
+    bytes_per_param = {"float32": 4, "float16": 2, "bfloat16": 2, "int8": 1, "int4": 0.5}
+    model_gb = params_B * bytes_per_param.get(dtype, 2)
+
+    fits = model_gb < gpu_memory_gb * 0.85  # leave 15% for KV cache
+    print(f"Model: {model_name}")
+    print(f"  Params: {params_B:.1f}B")
+    print(f"  Size ({dtype}): {model_gb:.1f} GB")
+    print(f"  GPU: {gpu_memory_gb} GB → {'FITS ✓' if fits else 'DOES NOT FIT ✗'}")
+    if not fits:
+        for q in ["int8", "int4"]:
+            q_gb = params_B * bytes_per_param[q]
+            if q_gb < gpu_memory_gb * 0.85:
+                print(f"  → Would fit with {q}: {q_gb:.1f} GB")
+                break
+        else:
+            print(f"  → Needs offloading or multi-GPU")
+    return fits
+
+will_it_fit("meta-llama/Llama-3.1-8B-Instruct", 24)   # FITS
+will_it_fit("meta-llama/Llama-3.1-70B-Instruct", 24)   # DOES NOT FIT → try int4
+will_it_fit("meta-llama/Llama-3.1-70B-Instruct", 80)   # FITS on H100
+```

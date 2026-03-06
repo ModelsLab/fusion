@@ -525,3 +525,86 @@ Ranked by quality (best to worst):
 7. GGUF Q3_K_M (~1.0 PPL degradation)
 8. INT4 per-tensor (~2.0 PPL degradation, not recommended)
 9. 2-bit (QuIP#, AQLM) (~1.5-3.0 PPL degradation)
+
+## Practical Quantization Quick Reference
+
+### Installation Commands (All Tools)
+```bash
+# AWQ
+pip install autoawq
+
+# GPTQ
+pip install auto-gptq
+
+# FP8 (vLLM handles this natively, OR use llm-compressor)
+pip install llmcompressor
+
+# GGUF (need llama.cpp)
+git clone https://github.com/ggerganov/llama.cpp && cd llama.cpp && make
+
+# bitsandbytes (NF4/INT8 for QLoRA)
+pip install bitsandbytes
+
+# TorchAO (PyTorch-native quantization)
+pip install torchao
+```
+
+### One-Liner Conversions
+```python
+# AWQ INT4 (10 min, needs ~32GB VRAM for 8B model)
+from awq import AutoAWQForCausalLM
+model = AutoAWQForCausalLM.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
+model.quantize(tokenizer, quant_config={"zero_point": True, "q_group_size": 128, "w_bit": 4, "version": "gemm"})
+model.save_quantized("./model-awq")
+
+# FP8 (instant, no calibration, Hopper+ only)
+vllm serve meta-llama/Llama-3.1-8B-Instruct --quantization fp8
+
+# GGUF Q4_K_M
+python convert_hf_to_gguf.py ./model --outfile model.gguf --outtype f16
+./llama-quantize model.gguf model-q4km.gguf Q4_K_M
+
+# TorchAO INT4 (PyTorch native)
+from torchao.quantization import quantize_, int4_weight_only
+quantize_(model, int4_weight_only(group_size=128))
+```
+
+### Speed & Quality Quick Reference
+| Method | Quality Loss | Memory | Decode Speedup | GPU Required | Calibration |
+|--------|-------------|--------|---------------|-------------|-------------|
+| FP8 | <0.1 PPL | 2x smaller | 1.5-2x | Hopper+ | No |
+| AWQ INT4 | 0.1-0.5 PPL | 4x smaller | 3-4x | Any NVIDIA | Yes (15min) |
+| GPTQ INT4 | 0.1-0.5 PPL | 4x smaller | 2-3x | Any NVIDIA | Yes (1-4hr) |
+| GGUF Q4_K_M | 0.2-0.5 PPL | 4x smaller | 2-3x (CPU/GPU) | Any | No |
+| INT8 SmoothQuant | <0.1 PPL | 2x smaller | 1.5x | Ampere+ | Yes (15min) |
+| NF4 (bnb) | 0.2-0.5 PPL | 4x smaller | 1x (not for serving) | Any NVIDIA | No |
+
+### "Which Quantization Should I Use?" Decision Tree
+```
+Is quality the #1 priority?
+├─ YES → FP8 (if Hopper+) or INT8 SmoothQuant
+└─ NO → continue
+
+Need to fit on consumer GPU (24GB)?
+├─ YES → Is model > 13B? → AWQ INT4 or GGUF Q4_K_M
+│        Is model < 13B? → FP16 might fit, try first
+└─ NO → continue
+
+Deploying with vLLM/SGLang?
+├─ YES → AWQ INT4 (Marlin kernel = fastest)
+└─ NO → GGUF Q4_K_M for llama.cpp/Ollama
+
+Fine-tuning (not inference)?
+├─ YES → QLoRA NF4 (bitsandbytes)
+└─ NO → AWQ for inference
+```
+
+### Common Quantization Mistakes
+| Mistake | Consequence | Fix |
+|---------|------------|-----|
+| Quantizing a small model (<3B) to INT4 | Noticeable quality degradation | Use INT8 or FP8 for small models |
+| Using random calibration data | Poor AWQ/GPTQ quality | Use representative task data (128+ samples) |
+| Quantizing embedding/LM head layers | Breaks model output quality | Add to ignore list: `ignore=["lm_head"]` |
+| INT4 for math/coding tasks | Math accuracy drops significantly | Use FP8 or INT8 for precision-sensitive tasks |
+| Deploying GPTQ without Marlin | 2x slower than necessary | Use vLLM with `--quantization gptq_marlin` |
+| Using bitsandbytes NF4 for serving | Very slow inference | NF4 is for training only; convert to AWQ for serving |

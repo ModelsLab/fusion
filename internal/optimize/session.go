@@ -28,6 +28,9 @@ type Session struct {
 	Status         string           `json:"status,omitempty"`
 	AgentSessionID string           `json:"agent_session_id,omitempty"`
 	LastResult     string           `json:"last_result,omitempty"`
+	CurrentBestID  string           `json:"current_best_id,omitempty"`
+	LoopDecisions  []LoopDecision   `json:"loop_decisions,omitempty"`
+	InnerLoop      InnerLoopState   `json:"inner_loop,omitempty"`
 	Request        Request          `json:"request"`
 	Context        kb.ContextPacket `json:"context"`
 	Candidates     []Candidate      `json:"candidates,omitempty"`
@@ -44,6 +47,15 @@ type Candidate struct {
 	Operation   string                    `json:"operation,omitempty"`
 	GPUArch     string                    `json:"gpu_arch,omitempty"`
 	Workspace   string                    `json:"workspace"`
+	ParentID    string                    `json:"parent_id,omitempty"`
+	Status      string                    `json:"status,omitempty"`
+	SearchMode  string                    `json:"search_mode,omitempty"`
+	SearchLane  string                    `json:"search_lane,omitempty"`
+	Round       int                       `json:"round,omitempty"`
+	Hypothesis  string                    `json:"hypothesis,omitempty"`
+	Score       float64                   `json:"score,omitempty"`
+	Winner      bool                      `json:"winner,omitempty"`
+	RejectReason string                   `json:"reject_reason,omitempty"`
 	CreatedAt   time.Time                 `json:"created_at"`
 	UpdatedAt   time.Time                 `json:"updated_at"`
 	Stages      map[string]CandidateStage `json:"stages,omitempty"`
@@ -56,6 +68,25 @@ type CandidateStage struct {
 	ExitCode     int                `json:"exit_code"`
 	Metrics      map[string]float64 `json:"metrics,omitempty"`
 	UpdatedAt    time.Time          `json:"updated_at"`
+}
+
+type LoopDecision struct {
+	Phase      string    `json:"phase"`
+	Family     string    `json:"family"`
+	Status     string    `json:"status"`
+	CandidateID string   `json:"candidate_id,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type InnerLoopState struct {
+	Status        string    `json:"status,omitempty"`
+	SearchMode    string    `json:"search_mode,omitempty"`
+	BeamWidth     int       `json:"beam_width,omitempty"`
+	CurrentRound  int       `json:"current_round,omitempty"`
+	BestCandidateID string  `json:"best_candidate_id,omitempty"`
+	StartedAt     time.Time `json:"started_at,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at,omitempty"`
 }
 
 type SessionSummary struct {
@@ -263,6 +294,33 @@ func (s *Session) UpsertCandidate(candidate Candidate) Candidate {
 			if len(candidate.Stages) == 0 {
 				candidate.Stages = s.Candidates[i].Stages
 			}
+			if strings.TrimSpace(candidate.ParentID) == "" {
+				candidate.ParentID = s.Candidates[i].ParentID
+			}
+			if strings.TrimSpace(candidate.Status) == "" {
+				candidate.Status = s.Candidates[i].Status
+			}
+			if strings.TrimSpace(candidate.SearchMode) == "" {
+				candidate.SearchMode = s.Candidates[i].SearchMode
+			}
+			if strings.TrimSpace(candidate.SearchLane) == "" {
+				candidate.SearchLane = s.Candidates[i].SearchLane
+			}
+			if candidate.Round == 0 {
+				candidate.Round = s.Candidates[i].Round
+			}
+			if strings.TrimSpace(candidate.Hypothesis) == "" {
+				candidate.Hypothesis = s.Candidates[i].Hypothesis
+			}
+			if candidate.Score == 0 {
+				candidate.Score = s.Candidates[i].Score
+			}
+			if !candidate.Winner {
+				candidate.Winner = s.Candidates[i].Winner
+			}
+			if strings.TrimSpace(candidate.RejectReason) == "" {
+				candidate.RejectReason = s.Candidates[i].RejectReason
+			}
 			s.Candidates[i] = candidate
 			s.UpdatedAt = now
 			return candidate
@@ -299,6 +357,52 @@ func (s *Session) RecordCandidateStage(candidateID, stage, artifactPath, command
 		return nil
 	}
 	return fmt.Errorf("candidate %q not found in session %s", candidateID, s.ID)
+}
+
+func (s *Session) RecordLoopDecision(phase, family, status, candidateID, reason string) {
+	now := time.Now().UTC()
+	decision := LoopDecision{
+		Phase:       canonicalLoopValue(phase),
+		Family:      canonicalLoopValue(family),
+		Status:      canonicalLoopValue(status),
+		CandidateID: strings.TrimSpace(candidateID),
+		Reason:      strings.TrimSpace(reason),
+		UpdatedAt:   now,
+	}
+	for i := range s.LoopDecisions {
+		if s.LoopDecisions[i].Phase == decision.Phase && s.LoopDecisions[i].Family == decision.Family {
+			s.LoopDecisions[i] = decision
+			s.UpdatedAt = now
+			return
+		}
+	}
+	s.LoopDecisions = append(s.LoopDecisions, decision)
+	s.UpdatedAt = now
+}
+
+func (s *Session) LoopDecision(phase, family string) (LoopDecision, bool) {
+	phase = canonicalLoopValue(phase)
+	family = canonicalLoopValue(family)
+	for _, decision := range s.LoopDecisions {
+		if decision.Phase == phase && decision.Family == family {
+			return decision, true
+		}
+	}
+	return LoopDecision{}, false
+}
+
+func (s *Session) SetCurrentBestCandidate(candidateID string) {
+	candidateID = strings.TrimSpace(candidateID)
+	s.CurrentBestID = candidateID
+	now := time.Now().UTC()
+	for i := range s.Candidates {
+		s.Candidates[i].Winner = s.Candidates[i].ID == candidateID && candidateID != ""
+		if s.Candidates[i].Winner {
+			s.Candidates[i].Status = "winner"
+			s.Candidates[i].UpdatedAt = now
+		}
+	}
+	s.UpdatedAt = now
 }
 
 func (s *Session) CandidateByID(id string) (*Candidate, bool) {
@@ -441,6 +545,7 @@ func mergeSessions(existing, incoming *Session) *Session {
 	merged.Status = valueOrFallback(merged.Status, existing.Status)
 	merged.AgentSessionID = valueOrFallback(merged.AgentSessionID, existing.AgentSessionID)
 	merged.LastResult = valueOrFallback(merged.LastResult, existing.LastResult)
+	merged.CurrentBestID = valueOrFallback(merged.CurrentBestID, existing.CurrentBestID)
 	if requestEmpty(merged.Request) {
 		merged.Request = cloneRequest(existing.Request)
 	}
@@ -448,6 +553,8 @@ func mergeSessions(existing, incoming *Session) *Session {
 		merged.Context = cloneContext(existing.Context)
 	}
 	merged.Notes = mergeStrings(existing.Notes, merged.Notes)
+	merged.LoopDecisions = mergeLoopDecisions(existing.LoopDecisions, merged.LoopDecisions)
+	merged.InnerLoop = mergeInnerLoop(existing.InnerLoop, merged.InnerLoop)
 	merged.Candidates = mergeCandidates(existing.Candidates, merged.Candidates)
 	merged.CreatedAt = chooseCreatedAt(existing.CreatedAt, merged.CreatedAt)
 	merged.UpdatedAt = laterTime(existing.UpdatedAt, merged.UpdatedAt)
@@ -483,6 +590,21 @@ func mergeCandidate(existing, incoming Candidate) Candidate {
 	merged.Operation = valueOrFallback(merged.Operation, existing.Operation)
 	merged.GPUArch = valueOrFallback(merged.GPUArch, existing.GPUArch)
 	merged.Workspace = valueOrFallback(merged.Workspace, existing.Workspace)
+	merged.ParentID = valueOrFallback(merged.ParentID, existing.ParentID)
+	merged.Status = valueOrFallback(merged.Status, existing.Status)
+	merged.SearchMode = valueOrFallback(merged.SearchMode, existing.SearchMode)
+	merged.SearchLane = valueOrFallback(merged.SearchLane, existing.SearchLane)
+	if merged.Round == 0 {
+		merged.Round = existing.Round
+	}
+	merged.Hypothesis = valueOrFallback(merged.Hypothesis, existing.Hypothesis)
+	if merged.Score == 0 {
+		merged.Score = existing.Score
+	}
+	if !merged.Winner {
+		merged.Winner = existing.Winner
+	}
+	merged.RejectReason = valueOrFallback(merged.RejectReason, existing.RejectReason)
 	merged.Description = valueOrFallback(merged.Description, existing.Description)
 	merged.CreatedAt = chooseCreatedAt(existing.CreatedAt, merged.CreatedAt)
 	merged.UpdatedAt = laterTime(existing.UpdatedAt, merged.UpdatedAt)
@@ -534,6 +656,8 @@ func cloneSession(session *Session) *Session {
 	cloned.Context = cloneContext(session.Context)
 	cloned.Candidates = cloneCandidates(session.Candidates)
 	cloned.Notes = append([]string{}, session.Notes...)
+	cloned.LoopDecisions = cloneLoopDecisions(session.LoopDecisions)
+	cloned.InnerLoop = session.InnerLoop
 	return &cloned
 }
 
@@ -698,6 +822,15 @@ func cloneCandidate(candidate Candidate) Candidate {
 	return candidate
 }
 
+func cloneLoopDecisions(decisions []LoopDecision) []LoopDecision {
+	if len(decisions) == 0 {
+		return nil
+	}
+	out := make([]LoopDecision, 0, len(decisions))
+	out = append(out, decisions...)
+	return out
+}
+
 func cloneStages(stages map[string]CandidateStage) map[string]CandidateStage {
 	if len(stages) == 0 {
 		return nil
@@ -802,4 +935,48 @@ func nonZeroInt(value, fallback int) int {
 		return value
 	}
 	return fallback
+}
+
+func canonicalLoopValue(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	value = strings.NewReplacer(" ", "-", "_", "-").Replace(value)
+	return strings.Trim(value, "-")
+}
+
+func mergeLoopDecisions(existing, incoming []LoopDecision) []LoopDecision {
+	if len(existing) == 0 {
+		return cloneLoopDecisions(incoming)
+	}
+	if len(incoming) == 0 {
+		return cloneLoopDecisions(existing)
+	}
+	out := cloneLoopDecisions(existing)
+	for _, decision := range incoming {
+		replaced := false
+		for i := range out {
+			if out[i].Phase == decision.Phase && out[i].Family == decision.Family {
+				if out[i].UpdatedAt.Before(decision.UpdatedAt) || out[i].UpdatedAt.IsZero() {
+					out[i] = decision
+				}
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			out = append(out, decision)
+		}
+	}
+	return out
+}
+
+func mergeInnerLoop(existing, incoming InnerLoopState) InnerLoopState {
+	merged := incoming
+	merged.Status = valueOrFallback(merged.Status, existing.Status)
+	merged.SearchMode = valueOrFallback(merged.SearchMode, existing.SearchMode)
+	merged.BeamWidth = nonZeroInt(merged.BeamWidth, existing.BeamWidth)
+	merged.CurrentRound = nonZeroInt(merged.CurrentRound, existing.CurrentRound)
+	merged.BestCandidateID = valueOrFallback(merged.BestCandidateID, existing.BestCandidateID)
+	merged.StartedAt = chooseCreatedAt(existing.StartedAt, merged.StartedAt)
+	merged.UpdatedAt = laterTime(existing.UpdatedAt, merged.UpdatedAt)
+	return merged
 }

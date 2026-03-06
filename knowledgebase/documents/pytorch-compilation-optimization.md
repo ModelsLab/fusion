@@ -393,3 +393,176 @@ parallelize_module(
     }
 )
 ```
+
+## Practical torch.compile Recipes
+
+### Recipe 1: Compile a Model for Inference (3 Lines)
+
+```python
+model = AutoModelForCausalLM.from_pretrained("model_name").cuda()
+model = torch.compile(model, mode="reduce-overhead")
+output = model(input_ids)  # first call compiles, subsequent calls are fast
+```
+
+**Expected speedup**: 1.3x-2.5x on decoder-only LLMs during generation, with the largest gains on small batch sizes where kernel launch overhead dominates. Prefill (long input) benefits less than decode (token-by-token).
+
+**Warmup time**: The first call triggers compilation, which takes 30 seconds to 5+ minutes depending on model size and mode. Subsequent calls with the same input shapes reuse the compiled graph. Use `TORCHINDUCTOR_FX_GRAPH_CACHE=1` to persist compiled artifacts across runs.
+
+**When it helps**: Repeated inference with fixed or few distinct shapes (serving, benchmarks, batch processing). Models with many small ops that can be fused (attention, layer norms, activations).
+
+**When it hurts**: One-shot scripts where compilation time exceeds total inference time. Highly dynamic models with variable control flow. Models that are already bottlenecked on a single large GEMM (compilation adds overhead with no fusion benefit).
+
+### Recipe 2: Debug Compilation Failures
+
+```bash
+TORCH_LOGS="dynamo" python script.py        # see what Dynamo traces and captures
+TORCH_LOGS="graph_breaks" python script.py   # see only graph break locations
+torch._dynamo.explain(model)(input)          # explain all breaks with reasons
+```
+
+**The 5 most common graph break causes and their fixes:**
+
+1. **`print()` or logging inside `forward()`** — Remove print statements or guard them with `if not torch.compiler.is_compiling():`. Replace with `torch._dynamo.comptime(print_fn)` if debug output is needed during tracing.
+
+2. **Calling `.item()`, `.tolist()`, or `.numpy()` on tensors** — These force a sync and exit the tensor domain. Replace `.item()` comparisons with `torch.where()`. If you need the value for control flow, restructure to avoid data-dependent branching.
+
+3. **Data-dependent control flow (`if tensor.sum() > 0`)** — Use `torch.where(condition, true_branch, false_branch)` or `torch.cond` for true conditional execution. If the condition is shape-dependent (not value-dependent), use `torch._dynamo.mark_dynamic`.
+
+4. **Unsupported third-party library calls in forward** — Move non-PyTorch calls outside the compiled region. Use `torch.compiler.allow_in_graph` for functions you know are safe, or wrap non-compilable code in a separate non-compiled function.
+
+5. **Python built-ins on tensors (e.g., `list(tensor)`, `dict` with tensor keys)** — Use `torch.unbind()` instead of `list()`, keep containers as tuples of tensors, and avoid using tensors as dictionary keys.
+
+### Recipe 3: torch.compile for LLM Serving
+
+**How vLLM uses torch.compile internally:**
+vLLM (v0.6+) uses `torch.compile` as its default compilation backend. It compiles the model's forward pass and leverages Piecewise CUDA Graphs — the model graph is split at operations that cannot be captured in CUDA graphs (like attention with paged KV cache), and each segment is independently captured. This gives most of the CUDA graph benefit without requiring the entire forward pass to be graph-capturable.
+
+**When to use each mode:**
+- `mode="reduce-overhead"` — Best for **decode** (autoregressive generation). Fixed small batch, repeated identical shapes, kernel-launch-bound. The CUDA graph replay eliminates per-kernel launch overhead.
+- `mode="max-autotune"` — Best for **prefill** (processing the prompt). Larger matrices, compute-bound. The extra Triton autotuning finds faster tile sizes and configs for the bigger GEMMs. Compilation is slower but pays off for sustained throughput workloads.
+- For serving, consider compiling prefill and decode with **different modes** by using separate compiled versions of the model or by relying on vLLM's built-in mode selection.
+
+**CUDA graphs integration with torch.compile:**
+```python
+# reduce-overhead mode automatically uses CUDAGraphTree internally.
+# For manual control, you can combine torch.compile with explicit CUDA graphs:
+
+compiled_model = torch.compile(model, mode="max-autotune-no-cudagraphs")
+
+# Then manually capture CUDA graphs over the compiled model:
+static_input = torch.randint(0, vocab_size, (batch, seq_len), device="cuda")
+with torch.cuda.graph(cuda_graph):
+    static_output = compiled_model(static_input)
+
+# This is useful when you need precise control over graph boundaries
+# (e.g., paged attention, variable cache sizes).
+```
+
+### Recipe 4: TorchAO Quantization (Post-Training)
+
+```python
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from torchao.quantization import quantize_, int4_weight_only
+
+# Load model in full precision
+model_name = "meta-llama/Llama-3.1-8B"
+model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16).cuda()
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+# Apply INT4 weight-only quantization (in-place, no calibration data needed)
+quantize_(model, int4_weight_only(group_size=128))
+
+# Compile for maximum performance
+model = torch.compile(model, mode="max-autotune")
+
+# Benchmark
+input_ids = tokenizer("The future of AI is", return_tensors="pt").input_ids.cuda()
+
+# Warmup (triggers compilation)
+for _ in range(3):
+    _ = model(input_ids)
+
+# Timed run
+import time
+torch.cuda.synchronize()
+start = time.perf_counter()
+for _ in range(100):
+    _ = model(input_ids)
+torch.cuda.synchronize()
+elapsed = time.perf_counter() - start
+print(f"Average latency: {elapsed / 100 * 1000:.2f} ms")
+```
+
+**Expected results (Llama-3.1-8B on A100-80GB):**
+- BF16 baseline: ~35ms per forward pass
+- INT4 weight-only + torch.compile: ~14ms per forward pass (~2.5x speedup)
+- Memory: ~4.5 GB (down from ~16 GB for BF16)
+
+**Key considerations:**
+- `int4_weight_only` uses asymmetric quantization with group_size=128 by default, which preserves quality well for most LLMs.
+- `quantize_` modifies the model in-place — the Linear layers are replaced with quantized versions that dequantize on-the-fly during the matmul.
+- `torch.compile` with `max-autotune` is critical: it fuses the dequantize + matmul into efficient Triton kernels. Without compilation, INT4 can be *slower* than BF16 due to dequantization overhead.
+
+### Recipe 5: FlexAttention Custom Mask (Sliding Window + Causal)
+
+```python
+import torch
+from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+
+# Configuration
+B, H, SEQ_LEN, D = 2, 32, 4096, 128
+WINDOW_SIZE = 1024
+
+# Define combined mask: causal AND sliding window
+def sliding_window_causal(b, h, q_idx, kv_idx):
+    causal = q_idx >= kv_idx
+    window = (q_idx - kv_idx) <= WINDOW_SIZE
+    return causal & window
+
+# Create the block mask (precomputed sparse structure)
+# BLOCK_SIZE controls granularity — 128 is a good default
+block_mask = create_block_mask(
+    sliding_window_causal,
+    B=B, H=H, Q_LEN=SEQ_LEN, KV_LEN=SEQ_LEN,
+    _compile=True,  # compile the mask creation itself for speed
+)
+
+# Create Q, K, V tensors
+query = torch.randn(B, H, SEQ_LEN, D, device="cuda", dtype=torch.bfloat16)
+key = torch.randn(B, H, SEQ_LEN, D, device="cuda", dtype=torch.bfloat16)
+value = torch.randn(B, H, SEQ_LEN, D, device="cuda", dtype=torch.bfloat16)
+
+# Run flex_attention (must be inside torch.compile for best performance)
+compiled_flex = torch.compile(flex_attention)
+output = compiled_flex(query, key, value, block_mask=block_mask)
+```
+
+**How BlockMask works:**
+- The sequence is divided into blocks (default 128 tokens each).
+- `create_block_mask` evaluates the mask function at block granularity to determine which blocks have any non-masked entries.
+- Blocks that are entirely masked are **skipped** during computation — this is where the speedup comes from for sparse patterns like sliding window.
+- The block mask is a precomputed data structure; it does not materialize a full (SEQ_LEN x SEQ_LEN) mask tensor.
+
+**Performance comparison vs standard SDPA (seq_len=4096, window=1024, A100):**
+- `F.scaled_dot_product_attention` with full causal mask: ~4.2 ms (computes full causal, wastes work outside window)
+- `F.scaled_dot_product_attention` with materialized combined mask: ~5.1 ms (mask materialization adds memory + time)
+- `flex_attention` with block mask: ~1.8 ms (~2.3x faster — skips blocks outside window)
+- The speedup scales with sparsity: a smaller window relative to sequence length yields greater speedup.
+
+### Troubleshooting torch.compile
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| First inference very slow (minutes) | Compilation overhead | Use `mode="reduce-overhead"`, cache with `TORCHINDUCTOR_FX_GRAPH_CACHE=1` |
+| Recompiles every call | Dynamic shapes trigger new compilations | Use `torch._dynamo.mark_dynamic(tensor, dim)` or `torch.compile(dynamic=True)` |
+| Slower than eager mode | Graph breaks prevent fusion | Check `TORCH_LOGS="graph_breaks"`, eliminate breaks |
+| OOM during compilation | Inductor autotuning allocates memory for many kernel variants | Reduce `max-autotune` configs: `torch._inductor.config.max_autotune_gemm_backends = "TRITON"` |
+| `torch._dynamo.exc.Unsupported` error | Operation not supported by Dynamo | Wrap unsupported code in `torch._dynamo.disable()` decorated function |
+| "CUDAGraphs skipped" warning | Operations incompatible with CUDA graph capture | Check for CPU-GPU syncs, in-place ops on non-static tensors, or allocations inside the graph region |
+| Accuracy differs from eager | Floating-point reordering in fused kernels | Set `torch._inductor.config.fallback_random=True`; for strict numerics use `torch.compile(fullgraph=False)` and isolate the divergent op |
+| `BackendCompilerFailed` with Triton error | Triton code generation bug or unsupported pattern | Update PyTorch/Triton to latest nightly; report bug with `TORCH_COMPILE_DEBUG=1` output |
+| Compilation succeeds but no speedup | Model is already memory-bandwidth-bound on a single large op | Profile with `torch.profiler` — if one GEMM dominates, compile cannot help; try quantization instead |
+| "shape mismatch" during CUDA graph replay | Input shape changed after graph capture | Use `dynamic=True` or bucket inputs into fixed shapes; avoid `reduce-overhead` for truly dynamic workloads |
+| Excessive memory usage at runtime | CUDA graphs allocate memory pools per captured graph | Limit distinct shape buckets; call `torch._dynamo.reset()` to free old compilations |
+| `torch.compile` hangs indefinitely | Infinite loop in Dynamo tracing due to complex control flow | Simplify `forward()`, extract complex logic into `@torch._dynamo.disable` functions, set `torch._dynamo.config.cache_size_limit` lower |

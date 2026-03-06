@@ -428,3 +428,273 @@ Expected: 80-90% of peak
 | FP4 on Blackwell | CUTLASS | First to support |
 | Non-standard shapes | CUTLASS | Can autotune for specific shapes |
 | Quick integration | cuBLAS | Simpler API |
+
+## Practical CUTLASS Recipes
+
+### Recipe 1: Build and Run CUTLASS Examples
+
+```bash
+# Clone and build
+git clone https://github.com/NVIDIA/cutlass.git
+cd cutlass
+mkdir build && cd build
+cmake .. -DCUTLASS_NVCC_ARCHS="89;90" -DCUTLASS_ENABLE_EXAMPLES=ON
+make -j$(nproc) 00_basic_gemm
+
+# Run basic GEMM example
+./examples/00_basic_gemm/00_basic_gemm
+```
+
+**Flag breakdown:**
+
+- `-DCUTLASS_NVCC_ARCHS="89;90"` -- Semicolon-separated list of SM architectures to compile for. `89` = Ada Lovelace (RTX 4090, L40), `90` = Hopper (H100). Other common values: `80` (A100), `86` (RTX 3090), `100` (Blackwell). Only include architectures you actually need; each one increases compile time significantly.
+- `-DCUTLASS_ENABLE_EXAMPLES=ON` -- Builds the examples under `examples/`. Off by default to speed up builds.
+- `make -j$(nproc) 00_basic_gemm` -- Builds only the `00_basic_gemm` target. Building all of CUTLASS takes a long time (30+ minutes); always specify the target you need.
+
+**Which architectures to target:**
+
+| GPU | SM Arch | Notes |
+|-----|---------|-------|
+| A100 | `80` | CUTLASS 2.x and 3.x both work |
+| RTX 3090 | `86` | Same as A100 codegen mostly |
+| RTX 4090 / L40 | `89` | Ada; FP8 tensor cores |
+| H100 / H200 | `90` / `90a` | Hopper; TMA, WGMMA, warp-specialization. Use `90a` for architecture-specific features. |
+| B100 / B200 | `100` | Blackwell; FP4, 5th-gen tensor cores |
+
+**Tip:** Start with `examples/00_basic_gemm` to validate your setup, then move to `examples/48_hopper_warp_specialized_gemm` for Hopper-specific kernels or `examples/55_hopper_mixed_dtype_gemm` for mixed-precision work.
+
+### Recipe 2: Run the CUTLASS Profiler
+
+```bash
+# Build profiler
+make -j$(nproc) cutlass_profiler
+
+# Profile all GEMM configurations for a specific shape
+./tools/profiler/cutlass_profiler --operation=gemm \
+  --m=4096 --n=4096 --k=4096 \
+  --A=f16 --B=f16 --C=f16 \
+  --arch=sm_89
+
+# Sweep multiple shapes at once
+./tools/profiler/cutlass_profiler --operation=gemm \
+  --m=1024,2048,4096 --n=1024,2048,4096 --k=4096 \
+  --A=f16 --B=f16 --C=f16 \
+  --arch=sm_89 \
+  --output=results.csv
+```
+
+**Interpreting profiler output:**
+
+The profiler emits a table with columns including:
+- **Operation**: The full CUTLASS kernel configuration (tile size, stages, warp count).
+- **Runtime (ms)**: Wall-clock execution time.
+- **GFLOPS**: Achieved throughput. Compare against theoretical peak (e.g., H100 FP16 = 989 TFLOPS with sparsity, ~495 TFLOPS dense).
+- **Bytes**: Total memory traffic. Lower is better for bandwidth-bound shapes.
+
+**Finding optimal tile sizes from profiler output:**
+
+1. Sort by GFLOPS descending. The top entry is the fastest kernel config for that shape.
+2. Look at the operation name -- it encodes tile sizes like `cutlass_gemm_f16_128x256x64_...`. These numbers are TILE_M x TILE_N x TILE_K.
+3. For small M (e.g., batch=1 inference, M=1-16), you will see skinny tiles like `64x64x64` or `64x128x64` win. For large square shapes, `128x256x64` typically dominates on Hopper.
+4. Export to CSV with `--output` and analyze across shapes to find a single config that works well for your workload distribution.
+
+**Useful profiler flags:**
+- `--warmup-iterations=5 --profiling-iterations=20` -- Control measurement accuracy.
+- `--operation=gemm_grouped` -- Profile grouped GEMM for MoE workloads.
+- `--split-k=1,2,4` -- Test split-K parallelism for tall-skinny shapes.
+
+### Recipe 3: Use CUTLASS from Python (CuTe DSL)
+
+**Setup:**
+
+```bash
+# CUTLASS Python packages require CUDA 12.x and Python 3.9+
+pip install nvidia-cutlass
+
+# Or install from source for latest features
+git clone https://github.com/NVIDIA/cutlass.git
+cd cutlass
+pip install -e python/
+
+# Verify installation
+python -c "import cutlass; print(cutlass.__version__)"
+```
+
+**Simple GEMM example in Python CuTe:**
+
+```python
+import torch
+import cutlass
+
+# Define GEMM plan
+plan = cutlass.op.Gemm(
+    element_A=cutlass.DataType.f16,
+    element_B=cutlass.DataType.f16,
+    element_C=cutlass.DataType.f16,
+    element_D=cutlass.DataType.f16,
+    layout_A=cutlass.LayoutType.RowMajor,
+    layout_B=cutlass.LayoutType.ColumnMajor,
+    element_accumulator=cutlass.DataType.f32,
+)
+
+# Compile for a specific tile config (optional -- CUTLASS picks defaults)
+plan.run(
+    torch.randn(4096, 4096, dtype=torch.float16, device="cuda"),
+    torch.randn(4096, 4096, dtype=torch.float16, device="cuda"),
+    torch.zeros(4096, 4096, dtype=torch.float16, device="cuda"),
+    torch.zeros(4096, 4096, dtype=torch.float16, device="cuda"),
+)
+```
+
+**Benchmarking against cuBLAS:**
+
+```python
+import torch
+import time
+
+M, N, K = 4096, 4096, 4096
+A = torch.randn(M, K, dtype=torch.float16, device="cuda")
+B = torch.randn(K, N, dtype=torch.float16, device="cuda")
+
+# Warmup
+for _ in range(10):
+    torch.mm(A, B)
+torch.cuda.synchronize()
+
+# cuBLAS baseline (via torch.mm)
+start = time.perf_counter()
+for _ in range(100):
+    torch.mm(A, B)
+torch.cuda.synchronize()
+cublas_time = (time.perf_counter() - start) / 100
+
+# CUTLASS GEMM
+import cutlass
+plan = cutlass.op.Gemm(
+    element_A=cutlass.DataType.f16, element_B=cutlass.DataType.f16,
+    element_C=cutlass.DataType.f16, element_D=cutlass.DataType.f16,
+    layout_A=cutlass.LayoutType.RowMajor, layout_B=cutlass.LayoutType.ColumnMajor,
+    element_accumulator=cutlass.DataType.f32,
+)
+C = torch.zeros(M, N, dtype=torch.float16, device="cuda")
+D = torch.zeros(M, N, dtype=torch.float16, device="cuda")
+
+for _ in range(10):
+    plan.run(A, B, C, D)
+torch.cuda.synchronize()
+
+start = time.perf_counter()
+for _ in range(100):
+    plan.run(A, B, C, D)
+torch.cuda.synchronize()
+cutlass_time = (time.perf_counter() - start) / 100
+
+print(f"cuBLAS: {cublas_time*1000:.2f} ms")
+print(f"CUTLASS: {cutlass_time*1000:.2f} ms")
+print(f"CUTLASS / cuBLAS: {cutlass_time/cublas_time:.2%}")
+```
+
+For standard dense GEMMs, expect CUTLASS and cuBLAS to be within 5% of each other. CUTLASS wins when you add custom epilogues that cuBLAS cannot fuse.
+
+### Recipe 4: CUTLASS for Custom Epilogues
+
+**Complete example: GEMM + bias + ReLU fused**
+
+```cpp
+#include "cutlass/gemm/device/gemm_universal_adapter.h"
+#include "cutlass/epilogue/fusion/sm90_callbacks_tma_warpspecialized.hpp"
+
+using namespace cute;
+using namespace cutlass;
+
+// Define the fused epilogue: D = relu(alpha * Acc + bias)
+using FusionOp =
+    epilogue::fusion::LinCombPerRowBiasEltAct<
+        cutlass::epilogue::thread::ReLu,  // activation
+        half_t,                            // element output
+        float,                             // element compute (accumulator type)
+        half_t                             // element bias
+    >;
+
+// Full GEMM config with fused epilogue
+using GemmKernel = gemm::kernel::GemmUniversal<
+    Shape<_128, _256, _64>,                // CTA tile shape (M, N, K)
+    half_t,                                // Element A
+    cutlass::layout::RowMajor,             // Layout A
+    half_t,                                // Element B
+    cutlass::layout::ColumnMajor,          // Layout B
+    half_t,                                // Element C
+    cutlass::layout::RowMajor,             // Layout C
+    float,                                 // Accumulator
+    cutlass::arch::OpClassTensorOp,        // Use tensor cores
+    cutlass::arch::Sm90,                   // Target Hopper
+    // ... collective mainloop and epilogue configs ...
+    FusionOp                               // Fused epilogue
+>;
+
+using Gemm = gemm::device::GemmUniversalAdapter<GemmKernel>;
+
+// Launch: pass bias pointer in epilogue params
+typename Gemm::Arguments args{
+    gemm::GemmUniversalMode::kGemm,
+    {M, N, K},
+    {ptr_A, stride_A, ptr_B, stride_B},
+    {{alpha, beta}, ptr_C, stride_C, ptr_D, stride_D, ptr_bias}
+};
+
+Gemm gemm_op;
+gemm_op.initialize(args);
+gemm_op.run(stream);
+```
+
+**How to compose EVT nodes:**
+
+The EVT is a tree where leaves are data sources (accumulators, scalars, tensors) and internal nodes are operations:
+
+1. **Start from the output** and work inward. If you want `D = relu(alpha * Acc + bias)`, your tree root is `ReLU`.
+2. **Each node wraps its children.** `Sm90EVT<Op, Child1, Child2>` means `Op(Child1, Child2)`.
+3. **Leaf nodes** are data sources:
+   - `Sm90AccFetch` -- the GEMM accumulator
+   - `ScalarBroadcast<float>` -- a scalar (alpha, beta, scale)
+   - `Sm90RowBroadcast<half_t>` -- a per-row vector (bias)
+   - `Sm90ColBroadcast<half_t>` -- a per-column vector
+   - `Load<half_t>` -- load from a matrix (e.g., source C)
+4. **Composing custom trees:**
+```cpp
+// Example: D = silu(alpha * Acc + row_bias) * gate_matrix
+using Inner =
+    Sm90EVT<SiLU,
+        Sm90EVT<Add,
+            Sm90EVT<Multiply,
+                ScalarBroadcast<float>,   // alpha
+                Sm90AccFetch              // accumulator
+            >,
+            Sm90RowBroadcast<half_t>     // bias
+        >
+    >;
+using Full =
+    Sm90EVT<Multiply,
+        Inner,                            // silu(alpha * Acc + bias)
+        Load<half_t>                      // gate matrix element-wise
+    >;
+```
+
+**When to use CUTLASS epilogue vs a separate kernel:**
+
+- **Use CUTLASS EVT when**: Your post-GEMM ops are element-wise or broadcast (bias, activation, quantization, scaling). EVT fuses these into the GEMM epilogue at zero extra memory traffic cost -- the accumulator never leaves registers before the epilogue runs.
+- **Use a separate kernel when**: Your post-GEMM op requires a global reduction (e.g., layernorm, softmax across the N dimension), needs to read from other GEMMs' outputs, or involves control flow that EVT cannot express. In those cases, write the GEMM output to global memory and launch a follow-up kernel.
+
+## When to Use CUTLASS vs Alternatives
+
+| Scenario | Best Choice | Why |
+|----------|------------|-----|
+| Standard GEMM | cuBLAS | Tuned, stable, easy API -- zero configuration needed |
+| GEMM + custom epilogue | CUTLASS EVT | Fused epilogue saves memory bandwidth; no separate kernel launch |
+| Triton can't match perf | CUTLASS | Better tensor core utilization, explicit shared memory control, warp-specialization |
+| Mixed precision W4A16 | Marlin (built on CUTLASS) | Specialized for quantized inference with fused dequant |
+| Research / prototyping | Triton | Faster development cycle; Python-native; good enough for most shapes |
+| Production serving kernel | CUTLASS or cuBLAS | Battle-tested, deterministic results, well-documented performance characteristics |
+| Grouped GEMM (MoE) | CUTLASS | Native `GroupedGemm` kernel handles variable-size batches efficiently |
+| FP8 training on Hopper | cuBLAS or Transformer Engine | Integrated scaling and amax tracking out of the box |
+| FP4 inference on Blackwell | CUTLASS | First library with FP4 tensor core support |
+| Custom attention variant | CUTLASS FMHA or FlashAttention | CUTLASS gives more control; FA is easier to integrate via PyTorch |

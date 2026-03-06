@@ -300,3 +300,93 @@ capacity = int(capacity_factor * (B * S * k / num_experts))
   4. More complex load balancing
 - Shared expert runs on ALL tokens → fuse with attention output
 ```
+
+## Practical MoE Deployment Recipes
+
+### Recipe 1: Serve Mixtral 8x7B on Single GPU (AWQ)
+```bash
+# Mixtral 8x7B = ~90 GB in FP16 (needs 2x A100 or 1x H100)
+# With AWQ INT4: ~24 GB (fits single RTX 4090!)
+
+# Quantize (one-time)
+pip install autoawq
+python -c "
+from awq import AutoAWQForCausalLM
+from transformers import AutoTokenizer
+model = AutoAWQForCausalLM.from_pretrained('mistralai/Mixtral-8x7B-Instruct-v0.1')
+tokenizer = AutoTokenizer.from_pretrained('mistralai/Mixtral-8x7B-Instruct-v0.1')
+model.quantize(tokenizer, quant_config={'zero_point': True, 'q_group_size': 128, 'w_bit': 4, 'version': 'gemm'})
+model.save_quantized('./Mixtral-8x7B-AWQ')
+tokenizer.save_pretrained('./Mixtral-8x7B-AWQ')
+"
+
+# Serve
+vllm serve ./Mixtral-8x7B-AWQ \
+  --quantization awq \
+  --dtype float16 \
+  --max-model-len 4096 \
+  --gpu-memory-utilization 0.95
+```
+
+### Recipe 2: Serve MoE with Expert Parallelism (Multi-GPU)
+```bash
+# DeepSeek-V3 or large MoE: split experts across GPUs
+vllm serve deepseek-ai/DeepSeek-V3 \
+  --tensor-parallel-size 8 \
+  --quantization fp8 \
+  --max-model-len 4096 \
+  --trust-remote-code
+
+# vLLM automatically handles:
+# - Expert routing across GPUs
+# - All-to-All communication for token dispatch
+# - Fused MoE GEMM kernel (fused_moe in vLLM)
+```
+
+### Recipe 3: MoE Memory Estimation
+```python
+# Quick memory calculator for MoE models
+def moe_memory_gb(
+    hidden_dim, intermediate_dim, num_layers,
+    num_experts, num_shared_experts, num_attention_heads,
+    head_dim, vocab_size, dtype_bytes=2  # 2 for FP16/BF16
+):
+    # Per-expert FFN: gate + up + down projections
+    expert_params = 3 * hidden_dim * intermediate_dim
+    total_expert_params = num_experts * expert_params * num_layers
+
+    # Shared expert (if any)
+    shared_params = num_shared_experts * expert_params * num_layers
+
+    # Attention: Q, K, V, O projections per layer
+    attn_params = 4 * hidden_dim * num_attention_heads * head_dim * num_layers
+
+    # Router: hidden_dim → num_experts per layer
+    router_params = hidden_dim * num_experts * num_layers
+
+    # Embeddings
+    embed_params = vocab_size * hidden_dim * 2  # input + output
+
+    total_params = total_expert_params + shared_params + attn_params + router_params + embed_params
+    total_gb = total_params * dtype_bytes / 1e9
+    return total_gb, total_params / 1e9
+
+# Mixtral 8x7B
+gb, params = moe_memory_gb(4096, 14336, 32, 8, 0, 32, 128, 32000)
+print(f"Mixtral 8x7B: {params:.1f}B params, {gb:.1f} GB in FP16")
+# → 46.7B params, 93.4 GB in FP16
+
+# DeepSeek-V3
+gb, params = moe_memory_gb(7168, 2048, 61, 256, 1, 128, 128, 129280)
+print(f"DeepSeek-V3: {params:.1f}B params, {gb:.1f} GB in FP16")
+# → 671B params, 1342 GB in FP16
+```
+
+### Common MoE Issues and Fixes
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| OOM with Mixtral | All 8 experts loaded even though only 2 active | Use AWQ INT4 or expert offloading |
+| Slow MoE inference | Token permutation overhead | Use vLLM's fused_moe kernel (automatic) |
+| Load imbalance (some experts unused) | Poor routing | Check router logits distribution; this is a model issue, not deployment |
+| Multi-GPU MoE slower than expected | All-to-All communication bottleneck | Ensure NVLink between GPUs; use EP only when needed |
+| DeepSeek-V3 quality issues | Shared expert not handled correctly | Use SGLang (best DeepSeek support) or vLLM with --trust-remote-code |

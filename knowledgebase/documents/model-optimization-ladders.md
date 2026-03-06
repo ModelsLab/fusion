@@ -243,3 +243,151 @@ Target: throughput or latency?
 [ ] 9. Profile again, identify remaining bottlenecks
 [ ] 10. Custom kernels for model-specific operations
 ```
+
+## Practical Optimization Scripts
+
+### Script 1: Measure Baseline Performance
+```python
+# baseline_benchmark.py — run this FIRST before any optimization
+import torch, time, json
+from vllm import LLM, SamplingParams
+
+MODEL = "meta-llama/Llama-3.1-8B-Instruct"
+PROMPTS = [
+    "Explain the theory of relativity in simple terms.",
+    "Write a Python function to find prime numbers up to N.",
+    "What are the main causes of climate change?",
+] * 10  # 30 prompts total
+
+# Load model
+llm = LLM(model=MODEL, dtype="float16", gpu_memory_utilization=0.9)
+params = SamplingParams(max_tokens=256, temperature=0.7)
+
+# Warmup
+_ = llm.generate(PROMPTS[:3], params)
+
+# Benchmark
+start = time.perf_counter()
+outputs = llm.generate(PROMPTS, params)
+elapsed = time.perf_counter() - start
+
+total_tokens = sum(len(o.outputs[0].token_ids) for o in outputs)
+results = {
+    "model": MODEL,
+    "dtype": "float16",
+    "num_prompts": len(PROMPTS),
+    "total_output_tokens": total_tokens,
+    "total_time_sec": round(elapsed, 2),
+    "tokens_per_sec": round(total_tokens / elapsed, 1),
+    "avg_latency_per_request_ms": round(elapsed / len(PROMPTS) * 1000, 1),
+    "gpu_memory_gb": round(torch.cuda.max_memory_allocated() / 1e9, 2),
+}
+print(json.dumps(results, indent=2))
+# Save for comparison
+with open("baseline_results.json", "w") as f:
+    json.dump(results, f, indent=2)
+```
+
+### Script 2: Compare Before vs After Optimization
+```python
+# compare_results.py
+import json
+
+with open("baseline_results.json") as f:
+    baseline = json.load(f)
+with open("optimized_results.json") as f:
+    optimized = json.load(f)
+
+print(f"{'Metric':<30} {'Baseline':>12} {'Optimized':>12} {'Speedup':>10}")
+print("-" * 66)
+for key in ["tokens_per_sec", "avg_latency_per_request_ms", "gpu_memory_gb"]:
+    b, o = baseline[key], optimized[key]
+    if "memory" in key:
+        ratio = f"{b/o:.2f}x less"
+    elif "latency" in key:
+        ratio = f"{b/o:.2f}x faster"
+    else:
+        ratio = f"{o/b:.2f}x faster"
+    print(f"{key:<30} {b:>12} {o:>12} {ratio:>10}")
+```
+
+### Script 3: Quick AWQ Optimization (Most Common Path)
+```bash
+# Step 1: Measure baseline (FP16)
+python baseline_benchmark.py  # save results
+
+# Step 2: Quantize to AWQ INT4 (one-time, ~15 min)
+pip install autoawq
+python -c "
+from awq import AutoAWQForCausalLM
+from transformers import AutoTokenizer
+model = AutoAWQForCausalLM.from_pretrained('meta-llama/Llama-3.1-8B-Instruct')
+tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-3.1-8B-Instruct')
+model.quantize(tokenizer, quant_config={'zero_point': True, 'q_group_size': 128, 'w_bit': 4, 'version': 'gemm'})
+model.save_quantized('./Llama-3.1-8B-AWQ')
+tokenizer.save_pretrained('./Llama-3.1-8B-AWQ')
+"
+
+# Step 3: Serve optimized model
+vllm serve ./Llama-3.1-8B-AWQ \
+  --quantization awq \
+  --dtype float16 \
+  --max-model-len 8192 \
+  --gpu-memory-utilization 0.9
+
+# Step 4: Re-run benchmark with AWQ model, save as optimized_results.json
+# Step 5: Compare with compare_results.py
+
+# Expected results (RTX 4090, batch=1 decode):
+#   FP16: ~65 tokens/sec, 16 GB VRAM
+#   AWQ:  ~260 tokens/sec, 4.5 GB VRAM (4x faster, 3.5x less memory)
+```
+
+### Script 4: FP8 Optimization (Hopper GPUs)
+```bash
+# No quantization step needed! vLLM handles FP8 on-the-fly
+vllm serve meta-llama/Llama-3.1-8B-Instruct \
+  --quantization fp8 \
+  --kv-cache-dtype fp8_e4m3 \
+  --dtype float16 \
+  --max-model-len 8192
+
+# Expected results (H100 SXM, batch=1 decode):
+#   FP16: ~208 tokens/sec, 16 GB model
+#   FP8:  ~416 tokens/sec, 8 GB model (2x faster, 2x less memory)
+#   FP8 + FP8 KV: same speed, allows 2x longer context or larger batch
+```
+
+### Script 5: Enable Speculative Decoding
+```bash
+# vLLM with draft model (for latency-critical applications)
+vllm serve meta-llama/Llama-3.1-8B-Instruct \
+  --speculative-model meta-llama/Llama-3.2-1B-Instruct \
+  --num-speculative-tokens 5 \
+  --quantization awq \
+  --dtype float16
+
+# Expected: 1.5-2.5x latency reduction for decode
+# Trade-off: uses more GPU memory (draft model + target model)
+# Best when: single-user, latency matters more than throughput
+```
+
+### vLLM Flag Quick Reference
+```bash
+# Performance flags (most impactful first)
+--quantization awq          # AWQ INT4 (3-4x decode speedup)
+--quantization fp8          # FP8 (2x speedup, Hopper+ only)
+--kv-cache-dtype fp8_e4m3   # FP8 KV cache (2x KV memory savings)
+--enable-chunked-prefill    # Better long-context handling
+--max-num-seqs 256          # Max concurrent sequences (tune for throughput)
+--gpu-memory-utilization 0.95  # Use more GPU memory for KV cache
+--enforce-eager false       # Enable CUDA graphs (default: enabled)
+
+# Debugging flags
+--enforce-eager true        # Disable CUDA graphs (for debugging)
+--disable-log-requests      # Reduce log noise in production
+
+# Multi-GPU
+--tensor-parallel-size 2    # Split model across 2 GPUs
+--pipeline-parallel-size 2  # Pipeline across 2 GPUs (less common)
+```

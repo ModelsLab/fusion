@@ -394,3 +394,460 @@ class TransformerBlock(nn.Module):
    → Avoid mixing large/small allocations
    → Pre-allocate KV cache at startup
 ```
+
+## Practical Memory Recipes
+
+### Recipe 1: Measure Your Model's Memory Usage
+
+Use this script to load any HuggingFace model and get a complete memory breakdown:
+
+```python
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+def measure_model_memory(model_name: str, dtype=torch.float16, device="cuda"):
+    """Load a model and measure exactly where GPU memory goes."""
+
+    torch.cuda.reset_peak_memory_stats()
+    torch.cuda.empty_cache()
+
+    mem_before = torch.cuda.memory_allocated()
+    print(f"Baseline GPU memory: {mem_before / 1e9:.2f} GB")
+
+    # --- Phase 1: Load weights ---
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, torch_dtype=dtype, device_map=device
+    )
+    model.eval()
+
+    mem_after_load = torch.cuda.memory_allocated()
+    weight_memory = mem_after_load - mem_before
+    print(f"Weight memory:       {weight_memory / 1e9:.2f} GB")
+    print(f"Parameter count:     {sum(p.numel() for p in model.parameters()) / 1e9:.2f} B")
+
+    # --- Phase 2: Run a forward pass to measure activations ---
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    inputs = tokenizer("Hello, how are you?", return_tensors="pt").to(device)
+
+    torch.cuda.reset_peak_memory_stats()
+    mem_before_fwd = torch.cuda.memory_allocated()
+
+    with torch.no_grad():
+        outputs = model(**inputs, use_cache=True)
+
+    mem_after_fwd = torch.cuda.memory_allocated()
+    peak_during_fwd = torch.cuda.max_memory_allocated()
+
+    activation_memory = peak_during_fwd - mem_before_fwd
+    print(f"Activation peak:     {activation_memory / 1e6:.2f} MB (seq_len={inputs['input_ids'].shape[1]})")
+
+    # --- Phase 3: Measure KV cache ---
+    past_kv = outputs.past_key_values
+    kv_memory = 0
+    for layer_kv in past_kv:
+        for tensor in layer_kv:
+            kv_memory += tensor.nelement() * tensor.element_size()
+    print(f"KV cache memory:     {kv_memory / 1e6:.2f} MB (for {inputs['input_ids'].shape[1]} tokens)")
+    print(f"KV per token:        {kv_memory / inputs['input_ids'].shape[1] / 1024:.2f} KB")
+
+    # --- Phase 4: Full summary ---
+    print("\n" + "=" * 60)
+    print(torch.cuda.memory_summary(abbreviated=True))
+
+    return {
+        "weight_gb": weight_memory / 1e9,
+        "activation_peak_mb": activation_memory / 1e6,
+        "kv_per_token_kb": kv_memory / inputs["input_ids"].shape[1] / 1024,
+    }
+
+
+# Usage:
+# stats = measure_model_memory("meta-llama/Llama-3.1-8B")
+```
+
+**Interpreting `torch.cuda.memory_summary()` output:**
+
+```
+|                   | Cur Usage  | Peak Usage | Allocs  |
+| Allocated memory  |  14.02 GiB |  14.25 GiB |    1842 |   <-- actual tensor data
+| Active memory     |  14.02 GiB |  14.25 GiB |    1842 |   <-- same minus freed-not-returned
+| Requested memory  |  14.00 GiB |  14.23 GiB |    1842 |   <-- what you asked for (before alignment)
+| GPU reserved mem  |  14.50 GiB |  14.50 GiB |      12 |   <-- caching allocator total pool
+| Non-releasable    |   0.48 GiB |   0.83 GiB |      34 |   <-- fragmented, can't return to CUDA
+```
+
+- **Allocated vs Reserved gap**: memory the caching allocator holds but is not actively used. Normal.
+- **Non-releasable**: fragmented blocks. If this is large (>10% of reserved), you have fragmentation issues -- set `expandable_segments:True`.
+- **Peak vs Current**: shows how much transient memory your forward pass needs.
+
+**"Can model X fit on GPU Y?" calculation:**
+
+```python
+def can_it_fit(
+    param_billions: float,
+    bits_per_param: float,   # 16 for FP16, 8 for FP8, 4 for INT4
+    gpu_memory_gb: float,
+    batch_size: int = 1,
+    seq_len: int = 2048,
+    kv_per_token_kb: float = 0,  # look up from table above
+) -> dict:
+    weight_gb = param_billions * bits_per_param / 8
+    kv_gb = kv_per_token_kb * seq_len * batch_size / 1024 / 1024
+    overhead_gb = 1.5  # framework, CUDA context, caching allocator
+    activation_gb = 0.5 * batch_size  # rough estimate for inference
+
+    total_gb = weight_gb + kv_gb + activation_gb + overhead_gb
+    fits = total_gb <= gpu_memory_gb
+    headroom = gpu_memory_gb - total_gb
+
+    print(f"Weights:      {weight_gb:.1f} GB")
+    print(f"KV cache:     {kv_gb:.2f} GB")
+    print(f"Activations:  {activation_gb:.2f} GB (estimate)")
+    print(f"Overhead:     {overhead_gb:.1f} GB")
+    print(f"TOTAL:        {total_gb:.1f} GB")
+    print(f"GPU:          {gpu_memory_gb:.0f} GB")
+    print(f"{'FITS' if fits else 'DOES NOT FIT'} (headroom: {headroom:+.1f} GB)")
+    return {"fits": fits, "total_gb": total_gb, "headroom_gb": headroom}
+
+# Example:
+# can_it_fit(param_billions=70, bits_per_param=4, gpu_memory_gb=80,
+#            batch_size=32, seq_len=4096, kv_per_token_kb=320)
+```
+
+### Recipe 2: Memory Calculator
+
+```python
+def memory_calculator(
+    model_name: str,
+    num_params_b: float,
+    num_layers: int,
+    num_kv_heads: int,
+    head_dim: int,
+    hidden_dim: int,
+    intermediate_size: int,
+    weight_dtype: str = "fp16",     # fp32, fp16, bf16, fp8, int4
+    kv_dtype: str = "fp16",         # fp16, fp8, int4
+    batch_size: int = 1,
+    seq_len: int = 2048,
+    training: bool = False,
+    optimizer: str = "adamw",       # adamw, sgd, adam-8bit
+):
+    """Complete memory breakdown for any model configuration."""
+
+    dtype_bytes = {"fp32": 4, "fp16": 2, "bf16": 2, "fp8": 1, "int4": 0.5}
+    w_bytes = dtype_bytes[weight_dtype]
+    kv_bytes = dtype_bytes[kv_dtype]
+
+    # 1. Weight memory
+    weight_mem = num_params_b * 1e9 * w_bytes
+    # INT4 has quantization scales (~10% overhead for group_size=128)
+    if weight_dtype == "int4":
+        weight_mem *= 1.1
+
+    # 2. KV cache memory
+    kv_per_token = 2 * num_layers * num_kv_heads * head_dim * kv_bytes
+    kv_mem = kv_per_token * seq_len * batch_size
+
+    # 3. Activation memory (inference)
+    # Per-layer: input (B*S*H) + attention scores (B*heads*S*S) + MLP intermediate
+    act_per_layer = (
+        batch_size * seq_len * hidden_dim * 2         # input + residual
+        + batch_size * seq_len * intermediate_size * 2 # MLP up + gate
+    )
+    activation_mem = act_per_layer * num_layers * 2  # 2 bytes for fp16 activations
+    # For inference with no grad, only need ~1 layer's activations at a time
+    if not training:
+        activation_mem = act_per_layer * 2  # only 1 layer active
+
+    # 4. Optimizer states (training only)
+    optimizer_mem = 0
+    if training:
+        if optimizer == "adamw":
+            # fp32 master weights + fp32 momentum + fp32 variance
+            optimizer_mem = num_params_b * 1e9 * (4 + 4 + 4)  # 12 bytes/param
+        elif optimizer == "sgd":
+            optimizer_mem = num_params_b * 1e9 * 4  # momentum only
+        elif optimizer == "adam-8bit":
+            optimizer_mem = num_params_b * 1e9 * (4 + 1 + 1)  # fp32 master + 8-bit states
+
+    # 5. Gradient memory (training only)
+    gradient_mem = 0
+    if training:
+        gradient_mem = num_params_b * 1e9 * 2  # fp16/bf16 gradients
+
+    # 6. Framework overhead
+    overhead = 1.5 * 1e9  # ~1.5 GB for CUDA context, PyTorch, etc.
+
+    total = weight_mem + kv_mem + activation_mem + optimizer_mem + gradient_mem + overhead
+
+    # Print table
+    print(f"\n{'=' * 65}")
+    print(f"  Memory Breakdown: {model_name}")
+    print(f"  {weight_dtype.upper()} weights | {kv_dtype.upper()} KV | batch={batch_size} | seq={seq_len}")
+    print(f"  {'Training' if training else 'Inference'} mode")
+    print(f"{'=' * 65}")
+    print(f"  {'Component':<30} {'Memory':>10} {'% Total':>10}")
+    print(f"  {'-' * 50}")
+
+    components = [
+        ("Model weights", weight_mem),
+        ("KV cache", kv_mem),
+        ("Activations", activation_mem),
+    ]
+    if training:
+        components.append(("Optimizer states", optimizer_mem))
+        components.append(("Gradients", gradient_mem))
+    components.append(("Framework overhead", overhead))
+
+    for name, mem in components:
+        pct = mem / total * 100
+        if mem >= 1e9:
+            print(f"  {name:<30} {mem / 1e9:>8.2f} GB {pct:>8.1f}%")
+        else:
+            print(f"  {name:<30} {mem / 1e6:>8.1f} MB {pct:>8.1f}%")
+
+    print(f"  {'-' * 50}")
+    print(f"  {'TOTAL':<30} {total / 1e9:>8.2f} GB {'100.0':>9}%")
+    print(f"{'=' * 65}\n")
+
+    return {"total_gb": total / 1e9, "weight_gb": weight_mem / 1e9, "kv_gb": kv_mem / 1e9}
+
+
+# --- Example usage for popular models ---
+
+# LLaMA 3.1 8B
+memory_calculator("LLaMA-3.1-8B", num_params_b=8.03, num_layers=32,
+    num_kv_heads=8, head_dim=128, hidden_dim=4096, intermediate_size=14336,
+    weight_dtype="fp16", batch_size=16, seq_len=4096)
+
+# LLaMA 3.1 70B
+memory_calculator("LLaMA-3.1-70B", num_params_b=70.6, num_layers=80,
+    num_kv_heads=8, head_dim=128, hidden_dim=8192, intermediate_size=28672,
+    weight_dtype="int4", kv_dtype="fp8", batch_size=32, seq_len=4096)
+
+# Qwen2.5-72B
+memory_calculator("Qwen2.5-72B", num_params_b=72.7, num_layers=80,
+    num_kv_heads=8, head_dim=128, hidden_dim=8192, intermediate_size=29568,
+    weight_dtype="int4", kv_dtype="fp8", batch_size=32, seq_len=4096)
+```
+
+### Recipe 3: Reduce Memory Step-by-Step
+
+A complete worked example showing how to take LLaMA 70B from requiring a multi-GPU setup down to a single consumer-grade GPU:
+
+```
+=== LLaMA 70B Memory Reduction Roadmap ===
+
+Starting point: FP16 (no optimization)
+  Weights:      140.0 GB
+  KV cache:      10.0 GB (batch=1, seq=4096, FP16, 320 KB/token)
+  Activations:    ~0.5 GB
+  Overhead:       ~1.5 GB
+  TOTAL:        ~152.0 GB
+  Requires:     2x H100 80GB with tensor parallelism
+
+Step 1: FP8 weight quantization (NVIDIA FP8 or llm-compressor)
+  Weights:       70.0 GB   (-70 GB, 2x compression)
+  KV cache:      10.0 GB
+  TOTAL:         ~82.0 GB
+  Requires:     1x H100 80GB (tight) or 2x A100 40GB
+  Quality:      <0.5% perplexity increase on most benchmarks
+
+Step 2: INT4 AWQ quantization (autoawq, group_size=128)
+  Weights:       ~38.5 GB  (-101.5 GB from baseline, ~3.6x compression)
+  KV cache:      10.0 GB
+  TOTAL:         ~50.5 GB
+  Requires:     1x A100 80GB (comfortable) or 1x A6000 48GB (tight)
+  Quality:      ~1-2% perplexity increase, minimal task degradation
+
+Step 3: FP8 KV cache (vLLM --kv-cache-dtype fp8)
+  Weights:       ~38.5 GB
+  KV cache:       5.0 GB   (-5 GB, 50% KV reduction)
+  TOTAL:         ~45.5 GB
+  Requires:     1x A100 40GB (fits!) or 1x RTX 4090 (need lower batch)
+  Quality:      negligible impact on output quality
+
+Step 4: Activation checkpointing (for training/fine-tuning)
+  Weights:       ~38.5 GB
+  KV cache:       5.0 GB
+  Activations:   ~0.2 GB   (-60% activation memory)
+  TOTAL:         ~45.2 GB
+  Trade-off:    ~33% slower forward pass due to recomputation
+
+Step 5: INT4 GPTQ weights + INT4 KV cache (aggressive)
+  Weights:       ~38.5 GB
+  KV cache:       2.5 GB   (-75% from FP16 baseline)
+  TOTAL:         ~43.0 GB
+  Requires:     1x A100 40GB with room for batch=8+
+  Quality:      monitor carefully -- INT4 KV can degrade long-context tasks
+
+=== Summary Table ===
+
+| Step | Technique                 | Weight GB | KV GB | Total GB | Fits On                |
+|------|---------------------------|-----------|-------|----------|------------------------|
+| 0    | FP16 baseline             | 140.0     | 10.0  | ~152     | 2x H100 80GB           |
+| 1    | FP8 weights               |  70.0     | 10.0  |  ~82     | 1x H100 80GB           |
+| 2    | INT4 AWQ weights          |  38.5     | 10.0  |  ~50     | 1x A100 80GB           |
+| 3    | + FP8 KV cache            |  38.5     |  5.0  |  ~45     | 1x A100 40GB           |
+| 4    | + Activ. checkpointing    |  38.5     |  5.0  |  ~45     | 1x A100 40GB (train)   |
+| 5    | + INT4 KV cache           |  38.5     |  2.5  |  ~43     | 1x A100 40GB + batch   |
+```
+
+### Recipe 4: Monitor Memory During Inference
+
+**Track peak memory and allocation patterns:**
+
+```python
+import torch
+import time
+from contextlib import contextmanager
+
+@contextmanager
+def track_gpu_memory(label=""):
+    """Context manager to track GPU memory for a code block."""
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    mem_start = torch.cuda.memory_allocated()
+    t_start = time.perf_counter()
+
+    yield
+
+    torch.cuda.synchronize()
+    t_end = time.perf_counter()
+    mem_end = torch.cuda.memory_allocated()
+    mem_peak = torch.cuda.max_memory_allocated()
+
+    print(f"[{label}]")
+    print(f"  Duration:     {t_end - t_start:.3f}s")
+    print(f"  Mem start:    {mem_start / 1e9:.3f} GB")
+    print(f"  Mem end:      {mem_end / 1e9:.3f} GB")
+    print(f"  Mem peak:     {mem_peak / 1e9:.3f} GB")
+    print(f"  Mem delta:    {(mem_end - mem_start) / 1e6:+.1f} MB")
+    print(f"  Peak above start: {(mem_peak - mem_start) / 1e6:.1f} MB")
+
+
+# Usage:
+# with track_gpu_memory("prefill batch=16"):
+#     outputs = model.generate(**inputs, max_new_tokens=1)
+#
+# with track_gpu_memory("decode 256 tokens"):
+#     outputs = model.generate(**inputs, max_new_tokens=256)
+```
+
+**Detect memory leaks across requests:**
+
+```python
+def detect_memory_leak(model, tokenizer, prompt, num_iterations=20, device="cuda"):
+    """Run repeated inference and check if memory grows over time."""
+    memories = []
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+
+    # Warm-up
+    for _ in range(3):
+        with torch.no_grad():
+            _ = model.generate(**inputs, max_new_tokens=50)
+
+    torch.cuda.empty_cache()
+
+    for i in range(num_iterations):
+        torch.cuda.synchronize()
+        mem_before = torch.cuda.memory_allocated()
+
+        with torch.no_grad():
+            outputs = model.generate(**inputs, max_new_tokens=50)
+
+        del outputs
+        torch.cuda.synchronize()
+        mem_after = torch.cuda.memory_allocated()
+        memories.append(mem_after)
+
+        if i % 5 == 0:
+            print(f"  Iter {i:3d}: {mem_after / 1e6:.1f} MB allocated")
+
+    # Check for growth
+    growth = memories[-1] - memories[0]
+    avg_growth_per_iter = growth / num_iterations
+
+    if abs(avg_growth_per_iter) > 1e6:  # more than 1 MB/iter
+        print(f"\nWARNING: Memory leak detected!")
+        print(f"  Growth: {growth / 1e6:.1f} MB over {num_iterations} iterations")
+        print(f"  Rate:   {avg_growth_per_iter / 1e6:.2f} MB/iteration")
+        print(f"  Common causes:")
+        print(f"    - KV cache not being freed (check model.generate kwargs)")
+        print(f"    - Tensors accidentally stored in a list/dict")
+        print(f"    - Gradient computation enabled (missing torch.no_grad)")
+    else:
+        print(f"\nNo memory leak detected. Stable at {memories[-1] / 1e6:.1f} MB")
+```
+
+**vLLM memory monitoring flags:**
+
+```bash
+# Launch vLLM with memory visibility
+python -m vllm.entrypoints.openai.api_server \
+    --model meta-llama/Llama-3.1-70B-Instruct \
+    --dtype float16 \
+    --gpu-memory-utilization 0.90 \
+    --max-model-len 4096 \
+    --enable-prefix-caching \
+    2>&1 | tee vllm_server.log
+
+# Key vLLM startup log lines to watch:
+#   "GPU memory: XX.XX GiB total, XX.XX GiB free"
+#   "Maximum number of batched tokens: XXXXX"
+#   "Number of GPU blocks: XXXX, Number of CPU blocks: XXXX"
+#   "KV cache memory: XX.XX GiB"
+
+# Monitor during serving:
+# GET /metrics endpoint exposes:
+#   vllm:gpu_cache_usage_perc    - KV cache utilization (target: 50-90%)
+#   vllm:num_requests_running    - concurrent requests
+#   vllm:num_requests_waiting    - queued requests (>0 means memory-bound)
+
+# Useful environment variables:
+export VLLM_LOGGING_LEVEL=DEBUG           # verbose memory logs
+export CUDA_VISIBLE_DEVICES=0             # restrict to specific GPU
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"  # reduce fragmentation
+
+# Check memory pressure in real time:
+watch -n 1 nvidia-smi                     # basic
+nvidia-smi dmon -s um -d 1                # utilization + memory every 1s
+```
+
+### "Can It Fit?" Quick Reference
+
+This table covers popular models across popular GPUs for inference. "YES" means fits with comfortable headroom for at least batch=1 at 4K context. "TIGHT" means it fits but with minimal headroom for KV cache. "QUANT" means it requires quantization (INT4/AWQ) to fit. "NO" means it does not fit even with INT4 quantization.
+
+| Model | Params | RTX 3090 (24 GB) | RTX 4090 (24 GB) | A100 40 GB | A100 80 GB | H100 80 GB |
+|-------|--------|-------------------|-------------------|------------|------------|------------|
+| **Mistral 7B** | 7.2B | FP16: YES | FP16: YES | FP16: YES | FP16: YES | FP16: YES |
+| | | INT4: YES (batch 50+) | INT4: YES (batch 50+) | INT4: YES (batch 100+) | INT4: YES (batch 200+) | INT4: YES (batch 200+) |
+| **LLaMA 3.1 8B** | 8.0B | FP16: YES | FP16: YES | FP16: YES | FP16: YES | FP16: YES |
+| | | INT4: YES (batch 40+) | INT4: YES (batch 40+) | INT4: YES (batch 80+) | INT4: YES (batch 200+) | INT4: YES (batch 200+) |
+| **Mixtral 8x7B** | 46.7B | FP16: NO | FP16: NO | FP16: TIGHT | FP16: YES | FP16: YES |
+| | | INT4: YES (batch 1-4) | INT4: YES (batch 1-4) | INT4: YES (batch 20+) | INT4: YES (batch 60+) | INT4: YES (batch 60+) |
+| **LLaMA 3.1 70B** | 70.6B | FP16: NO | FP16: NO | FP16: NO | FP16: TIGHT | FP16: TIGHT |
+| | | INT4: TIGHT (batch 1) | INT4: TIGHT (batch 1) | INT4: YES (batch 1-4) | INT4: YES (batch 20+) | FP8: YES (batch 10+) |
+| **Qwen2.5 72B** | 72.7B | FP16: NO | FP16: NO | FP16: NO | FP16: TIGHT | FP16: TIGHT |
+| | | INT4: TIGHT (batch 1) | INT4: TIGHT (batch 1) | INT4: YES (batch 1-4) | INT4: YES (batch 20+) | FP8: YES (batch 10+) |
+| **LLaMA 3.1 405B** | 405B | ANY: NO | ANY: NO | ANY: NO | INT4: NO (need 4+) | FP8: NO (need 8x) |
+| | | -- | -- | -- | 4x A100 80: INT4 YES | 8x H100: FP8 YES |
+
+**Multi-GPU configurations for large models:**
+
+| Model | Configuration | Precision | Batch Capacity (4K ctx) |
+|-------|--------------|-----------|------------------------|
+| LLaMA 70B | 2x RTX 4090 (TP=2) | INT4 AWQ | batch 8-12 |
+| LLaMA 70B | 2x A100 80GB (TP=2) | FP16 | batch 30-40 |
+| LLaMA 70B | 4x H100 (TP=4) | FP8 | batch 150-200 |
+| Mixtral 8x7B | 2x RTX 4090 (TP=2) | INT4 AWQ | batch 10-15 |
+| LLaMA 405B | 8x H100 (TP=8) | FP8 | batch 20-30 |
+| LLaMA 405B | 16x H100 (TP=8, PP=2) | FP8 | batch 60-80 |
+
+**How to read this table:**
+- Check your model row and GPU column
+- If FP16 shows YES, no quantization needed
+- If only INT4 shows YES, you must quantize (use AutoAWQ or AutoGPTQ)
+- "batch N+" means you can serve N concurrent sequences at 4096 context length
+- For longer contexts (8K, 16K, 32K), divide batch capacity roughly proportionally
+- Multi-GPU setups use tensor parallelism (TP) which splits weights evenly but adds inter-GPU communication overhead
