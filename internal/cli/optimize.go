@@ -14,12 +14,20 @@ func newOptimizeCommand() *cobra.Command {
 		Short: "Plan model and kernel optimization work for a target GPU",
 	}
 
-	cmd.AddCommand(newOptimizePlanCommand())
+	cmd.AddCommand(
+		newOptimizeRunCommand(),
+		newOptimizeSessionCommand(),
+		newOptimizePlanCommand(),
+		newOptimizeCuteCommand(),
+		newOptimizeTritonCommand(),
+		newOptimizeCUDACommand(),
+	)
 	return cmd
 }
 
 func newOptimizePlanCommand() *cobra.Command {
 	var request optimize.Request
+	var targetName string
 
 	cmd := &cobra.Command{
 		Use:   "plan",
@@ -28,6 +36,16 @@ func newOptimizePlanCommand() *cobra.Command {
 			runtimeState, err := loadRuntime()
 			if err != nil {
 				return err
+			}
+
+			if strings.TrimSpace(targetName) != "" {
+				target, _, err := resolveTarget(runtimeState, targetName)
+				if err != nil {
+					return err
+				}
+				if strings.TrimSpace(request.GPU) == "" {
+					request.GPU = target.GPU
+				}
 			}
 
 			if strings.TrimSpace(request.GPU) == "" {
@@ -85,6 +103,31 @@ func newOptimizePlanCommand() *cobra.Command {
 				}
 			}
 
+			if len(plan.ModelPaths) > 0 {
+				cmd.Println("\nModel Paths")
+				for i, track := range plan.ModelPaths {
+					cmd.Printf("%d. %s [%s, score %d]\n", i+1, track.Name, track.SupportLevel, track.Score)
+					cmd.Printf("   %s\n", track.Summary)
+					cmd.Printf("   Format: %s\n", track.Format)
+					cmd.Printf("   Why: %s\n", strings.Join(track.Reasons, "; "))
+					cmd.Printf("   Actions: %s\n", joinOrFallback(track.Actions, "none"))
+					cmd.Printf("   Tradeoffs: %s\n", joinOrFallback(track.Tradeoffs, "none"))
+					cmd.Printf("   Sources: %s\n", formatSourceList(track.Sources))
+				}
+			}
+
+			if len(plan.KernelBackends) > 0 {
+				cmd.Println("\nKernel Backends")
+				for i, backend := range plan.KernelBackends {
+					cmd.Printf("%d. %s [%s, score %d]\n", i+1, backend.Name, backend.SupportLevel, backend.Score)
+					cmd.Printf("   %s\n", backend.Summary)
+					cmd.Printf("   Why: %s\n", strings.Join(backend.Reasons, "; "))
+					cmd.Printf("   Strengths: %s\n", joinOrFallback(backend.Strengths, "none"))
+					cmd.Printf("   Tradeoffs: %s\n", joinOrFallback(backend.Tradeoffs, "none"))
+					cmd.Printf("   Sources: %s\n", formatSourceList(backend.Sources))
+				}
+			}
+
 			cmd.Println("\nTop Strategies")
 			if len(plan.Recommendations) == 0 {
 				cmd.Println("- no strategies matched the current request")
@@ -114,6 +157,7 @@ func newOptimizePlanCommand() *cobra.Command {
 		},
 	}
 
+	cmd.Flags().StringVar(&targetName, "target", "", "configured target name; if set, the target GPU is used when --gpu is omitted")
 	cmd.Flags().StringVar(&request.GPU, "gpu", "", "target GPU id or name; defaults to the first detected NVIDIA GPU when available")
 	cmd.Flags().StringVar(&request.Model, "model", "", "model name or family, for example llama-3.1-8b or qwen2.5-32b")
 	cmd.Flags().StringVar(&request.Workload, "workload", "decode", "workload shape: decode, prefill, serving, training-prep")

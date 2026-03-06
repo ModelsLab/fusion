@@ -2,7 +2,9 @@ package optimize
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ModelsLab/fusion/internal/kb"
@@ -28,6 +30,31 @@ type Recommendation struct {
 	Sources  []kb.Source
 }
 
+type KernelBackendRecommendation struct {
+	ID           string
+	Name         string
+	Summary      string
+	SupportLevel string
+	Score        int
+	Reasons      []string
+	Strengths    []string
+	Tradeoffs    []string
+	Sources      []kb.Source
+}
+
+type ModelPathRecommendation struct {
+	ID           string
+	Name         string
+	Format       string
+	Summary      string
+	SupportLevel string
+	Score        int
+	Reasons      []string
+	Actions      []string
+	Tradeoffs    []string
+	Sources      []kb.Source
+}
+
 type Plan struct {
 	Request                  Request
 	GPU                      *kb.GPUProfile
@@ -36,6 +63,8 @@ type Plan struct {
 	BottleneckReason         string
 	Priorities               []string
 	MeasurementLoop          []string
+	ModelPaths               []ModelPathRecommendation
+	KernelBackends           []KernelBackendRecommendation
 	Recommendations          []Recommendation
 	SupportingSources        []kb.Source
 	Warnings                 []string
@@ -75,6 +104,8 @@ func (p *Planner) Build(input Request) (*Plan, error) {
 
 	plan.LikelyBottleneck, plan.BottleneckReason = inferBottleneck(req, plan.GPU)
 	plan.Priorities = derivePriorities(req, plan.GPU, plan.LikelyBottleneck)
+	plan.ModelPaths = p.recommendModelPaths(req, plan.GPU, plan.LikelyBottleneck)
+	plan.KernelBackends = p.recommendKernelBackends(req, plan.GPU, plan.LikelyBottleneck)
 	plan.Warnings = warnings
 
 	recommendations := []Recommendation{}
@@ -109,6 +140,425 @@ func (p *Planner) Build(input Request) (*Plan, error) {
 	plan.Recommendations = recommendations
 	plan.SupportingSources = p.store.SourcesForIDs(supportingSourceIDs)
 	return plan, nil
+}
+
+type kernelBackendSpec struct {
+	ID           string
+	Name         string
+	Summary      string
+	SupportLevel string
+	Strengths    []string
+	Tradeoffs    []string
+	SourceIDs    []string
+}
+
+type modelPathSpec struct {
+	ID           string
+	Name         string
+	Format       string
+	Summary      string
+	SupportLevel string
+	Actions      []string
+	Tradeoffs    []string
+	SourceIDs    []string
+}
+
+func (p *Planner) recommendModelPaths(req Request, gpu *kb.GPUProfile, bottleneck string) []ModelPathRecommendation {
+	specs := []modelPathSpec{
+		{
+			ID:           "bf16_baseline",
+			Name:         "BF16 Baseline",
+			Format:       "bf16",
+			Summary:      "Keep a clean bf16 or fp16 reference so every lower-precision or custom-kernel path has an accuracy and speed baseline.",
+			SupportLevel: "recommended",
+			Actions: []string{
+				"Measure bf16 or fp16 first with the exact production-like prompt mix.",
+				"Capture tokens/sec, TTFT, inter-token latency, and peak memory before changing precision.",
+			},
+			Tradeoffs: []string{
+				"Uses the most memory and may underutilize newer low-precision Tensor Core paths.",
+			},
+			SourceIDs: []string{"nvidia-cuda-programming-guide"},
+		},
+		{
+			ID:           "awq_int4_weights",
+			Name:         "AWQ Weight-Only INT4",
+			Format:       "awq-int4",
+			Summary:      "Best first quantization track when memory traffic or VRAM footprint is the dominant problem, especially on consumer GPUs.",
+			SupportLevel: "recommended",
+			Actions: []string{
+				"Benchmark an AWQ or equivalent weight-only INT4 path before writing large custom kernels.",
+				"Fuse dequantization into GEMM or attention hot paths instead of materializing higher-precision weights.",
+				"Treat prefill and decode as separate tracks because the best quantization choice can differ.",
+			},
+			Tradeoffs: []string{
+				"Quality still depends on calibration quality and runtime kernel coverage.",
+				"Weight-only INT4 helps memory pressure more than raw compute throughput.",
+			},
+			SourceIDs: []string{"awq-activation-aware-weight-quantization", "tensorrt-llm-docs"},
+		},
+		{
+			ID:           "fp8_serving",
+			Name:         "FP8 Serving Path",
+			Format:       "fp8",
+			Summary:      "Preferred mature low-precision path on Hopper and Blackwell when the model and runtime tolerate FP8 calibration.",
+			SupportLevel: "recommended",
+			Actions: []string{
+				"Validate an FP8 runtime path before hand-writing custom tensor-core kernels.",
+				"Track quality drift and tensor-core utilization together.",
+			},
+			Tradeoffs: []string{
+				"Needs calibration and selective fallbacks for sensitive model blocks.",
+			},
+			SourceIDs: []string{"nvidia-h100", "nvidia-blackwell-architecture", "tensorrt-llm-docs"},
+		},
+		{
+			ID:           "nvfp4_block_scaled",
+			Name:         "NVFP4 / Block-Scaled Low Precision",
+			Format:       "nvfp4",
+			Summary:      "High-upside experimental Blackwell track for models that are still limited by memory footprint or Tensor Core throughput after FP8.",
+			SupportLevel: "experimental",
+			Actions: []string{
+				"Use FP8 as the control path before evaluating NVFP4 or block-scaled FP4.",
+				"Gate rollout on calibration drift and real end-to-end serving metrics, not only GEMM microbenchmarks.",
+			},
+			Tradeoffs: []string{
+				"Tooling and runtime coverage are still evolving.",
+				"Portability outside Blackwell stacks is weak.",
+			},
+			SourceIDs: []string{"nvidia-blackwell-architecture", "triton-block-scaled-matmul"},
+		},
+		{
+			ID:           "kv_cache_quantized",
+			Name:         "KV Cache Quantization",
+			Format:       "fp8/int8/int4-kv",
+			Summary:      "For long-context decode and serving, KV compression can beat another round of GEMM tuning if memory movement dominates.",
+			SupportLevel: "experimental",
+			Actions: []string{
+				"Benchmark KV compression separately from weight quantization.",
+				"Track memory footprint, throughput, and quality together on representative long-context prompts.",
+			},
+			Tradeoffs: []string{
+				"Adds cache-management complexity and quality sensitivity varies by model and workload.",
+			},
+			SourceIDs: []string{"flashinfer-docs", "xkv-paper", "titanus-paper"},
+		},
+	}
+
+	recommendations := make([]ModelPathRecommendation, 0, len(specs))
+	for _, spec := range specs {
+		score, reasons := scoreModelPath(spec, req, gpu, bottleneck)
+		recommendations = append(recommendations, ModelPathRecommendation{
+			ID:           spec.ID,
+			Name:         spec.Name,
+			Format:       spec.Format,
+			Summary:      spec.Summary,
+			SupportLevel: spec.SupportLevel,
+			Score:        score,
+			Reasons:      reasons,
+			Actions:      append([]string{}, spec.Actions...),
+			Tradeoffs:    append([]string{}, spec.Tradeoffs...),
+			Sources:      p.store.SourcesForIDs(spec.SourceIDs),
+		})
+	}
+
+	sort.Slice(recommendations, func(i, j int) bool {
+		if recommendations[i].Score == recommendations[j].Score {
+			return recommendations[i].Name < recommendations[j].Name
+		}
+		return recommendations[i].Score > recommendations[j].Score
+	})
+
+	if len(recommendations) > 4 {
+		recommendations = recommendations[:4]
+	}
+
+	return recommendations
+}
+
+func (p *Planner) recommendKernelBackends(req Request, gpu *kb.GPUProfile, bottleneck string) []KernelBackendRecommendation {
+	specs := []kernelBackendSpec{
+		{
+			ID:           "cute_dsl",
+			Name:         "CuTe DSL",
+			Summary:      "Best fit for NVIDIA-first kernels when you want CUTLASS-grade building blocks, JIT/AOT options, and direct Tensor Core control.",
+			SupportLevel: "recommended",
+			Strengths: []string{
+				"Best path for NVIDIA-specific matrix, attention, and epilogue kernels.",
+				"Supports JIT plus AOT-style export flows for production integration.",
+				"Maps closely to CUTLASS/CuTe hardware concepts on Ampere, Hopper, and Blackwell.",
+			},
+			Tradeoffs: []string{
+				"Python authoring still assumes a Linux NVIDIA runtime for real validation.",
+				"Lower-level than Triton, so simple fused elementwise kernels are usually faster to prototype elsewhere.",
+			},
+			SourceIDs: []string{"nvidia-cutlass-overview", "nvidia-cute-dsl"},
+		},
+		{
+			ID:           "triton",
+			Name:         "Triton",
+			Summary:      "Strong default for fast iteration on fused pointwise, reduction, dequantization, and custom attention-adjacent kernels.",
+			SupportLevel: "recommended",
+			Strengths: []string{
+				"Fastest path for trying many fusion ideas in Python.",
+				"Good fit for memory-bound decode kernels and custom data-layout transforms.",
+				"Large public ecosystem of examples for GEMM, attention, and fused ops.",
+			},
+			Tradeoffs: []string{
+				"Peak kernels sometimes still require dropping to CuTe or CUDA C++.",
+				"Production packaging and low-level debugging can be rougher than CUDA-native flows.",
+			},
+			SourceIDs: []string{"triton-tutorials"},
+		},
+		{
+			ID:           "cuda_cutlass_cpp",
+			Name:         "CUDA C++ / CUTLASS",
+			Summary:      "Use when you need full control over launch structure, runtime integration, or a kernel shape that DSLs do not express well yet.",
+			SupportLevel: "recommended",
+			Strengths: []string{
+				"Most control over code generation, memory movement, and runtime integration.",
+				"Easiest backend to embed in mature C++ inference runtimes.",
+				"Still the escape hatch for kernels that need explicit low-level control.",
+			},
+			Tradeoffs: []string{
+				"Longest iteration cycle and the highest implementation cost.",
+				"Template-heavy CUTLASS code can be harder to search, repair, and auto-generate than Python DSLs.",
+			},
+			SourceIDs: []string{"nvidia-cuda-programming-guide", "nvidia-cutlass-overview"},
+		},
+	}
+
+	recommendations := make([]KernelBackendRecommendation, 0, len(specs))
+	for _, spec := range specs {
+		score, reasons := scoreKernelBackend(spec, req, gpu, bottleneck)
+		recommendations = append(recommendations, KernelBackendRecommendation{
+			ID:           spec.ID,
+			Name:         spec.Name,
+			Summary:      spec.Summary,
+			SupportLevel: spec.SupportLevel,
+			Score:        score,
+			Reasons:      reasons,
+			Strengths:    append([]string{}, spec.Strengths...),
+			Tradeoffs:    append([]string{}, spec.Tradeoffs...),
+			Sources:      p.store.SourcesForIDs(spec.SourceIDs),
+		})
+	}
+
+	sort.Slice(recommendations, func(i, j int) bool {
+		if recommendations[i].Score == recommendations[j].Score {
+			return recommendations[i].Name < recommendations[j].Name
+		}
+		return recommendations[i].Score > recommendations[j].Score
+	})
+
+	return recommendations
+}
+
+func scoreModelPath(spec modelPathSpec, req Request, gpu *kb.GPUProfile, bottleneck string) (int, []string) {
+	score := 35
+	reasons := []string{}
+	modelParamsB := parseModelParamsBillions(req.Model)
+	bf16FootprintGB := estimateWeightFootprintGB(modelParamsB, "bf16")
+
+	switch spec.ID {
+	case "bf16_baseline":
+		score += 18
+		reasons = append(reasons, "keeps a reliable reference path before quantization or custom kernels")
+		if req.Workload == "prefill" || req.Workload == "decode" || req.Workload == "serving" {
+			score += 6
+			reasons = append(reasons, fmt.Sprintf("gives a clean baseline for %s benchmarking", req.Workload))
+		}
+	case "awq_int4_weights":
+		if bottleneck == "memory" || bottleneck == "mixed" {
+			score += 24
+			reasons = append(reasons, fmt.Sprintf("best early track for a %s bottleneck", bottleneck))
+		}
+		if gpu != nil && strings.EqualFold(gpu.Market, "consumer") {
+			score += 16
+			reasons = append(reasons, "consumer GPUs usually benefit quickly from weight-only INT4 paths")
+		}
+		if containsAny(req.Goals, "memory", "cost", "throughput") {
+			score += 8
+			reasons = append(reasons, "aligns with memory and serving cost goals")
+		}
+		if req.Workload == "decode" || req.Workload == "serving" {
+			score += 8
+			reasons = append(reasons, fmt.Sprintf("%s often improves once weight traffic drops", req.Workload))
+		}
+		if gpu != nil && bf16FootprintGB > 0 && bf16FootprintGB > float64(gpu.MemoryGB)*0.85 {
+			score += 16
+			reasons = append(reasons, fmt.Sprintf("the model looks too large for a clean bf16 fit on %s", gpu.Name))
+		}
+	case "fp8_serving":
+		if gpu != nil && matchesBucket(gpu.Family, []string{"Hopper", "Blackwell"}) {
+			score += 28
+			reasons = append(reasons, fmt.Sprintf("%s is the best GPU family for mature FP8 paths", gpu.Family))
+		}
+		if bottleneck == "compute" {
+			score += 14
+			reasons = append(reasons, "compute-bound workloads usually test FP8 before custom matmul kernels")
+		}
+		if containsAny(req.Goals, "throughput", "cost") {
+			score += 10
+			reasons = append(reasons, "FP8 often improves both throughput and cost per token")
+		}
+		if gpu != nil && modelParamsB > 0 && estimateWeightFootprintGB(modelParamsB, "fp8") <= float64(gpu.MemoryGB) {
+			score += 8
+			reasons = append(reasons, "FP8 may fit the model cleanly where bf16 does not")
+		}
+	case "nvfp4_block_scaled":
+		if gpu != nil && matchesBucket(gpu.Family, []string{"Blackwell"}) {
+			score += 34
+			reasons = append(reasons, "Blackwell is the first real home for NVFP4-style serving experiments")
+		}
+		if bottleneck == "compute" || bottleneck == "memory" {
+			score += 10
+			reasons = append(reasons, fmt.Sprintf("can matter after FP8 when %s pressure remains", bottleneck))
+		}
+		if containsAny(req.Goals, "throughput", "memory", "cost") {
+			score += 8
+			reasons = append(reasons, "targets aggressive low-byte serving paths")
+		}
+	case "kv_cache_quantized":
+		if req.Workload == "decode" || req.Workload == "serving" {
+			score += 24
+			reasons = append(reasons, fmt.Sprintf("%s workloads are often limited by KV movement", req.Workload))
+		}
+		if bottleneck == "memory" {
+			score += 18
+			reasons = append(reasons, "memory-bound decode usually needs KV decisions, not only GEMM tuning")
+		}
+		if containsAny(req.Operators, "kv-cache", "attention", "paged-attention") {
+			score += 14
+			reasons = append(reasons, "operators point directly at KV-heavy attention paths")
+		}
+		if req.ContextLength >= 16000 {
+			score += 10
+			reasons = append(reasons, fmt.Sprintf("context length %d makes KV footprint more important", req.ContextLength))
+		}
+	}
+
+	if len(reasons) == 0 {
+		reasons = append(reasons, spec.Summary)
+	}
+	return score, reasons
+}
+
+func scoreKernelBackend(spec kernelBackendSpec, req Request, gpu *kb.GPUProfile, bottleneck string) (int, []string) {
+	score := 40
+	reasons := []string{}
+
+	if gpu != nil {
+		switch spec.ID {
+		case "cute_dsl":
+			switch canonicalGPUFamily(gpu.Family) {
+			case "blackwell", "hopper":
+				score += 28
+				reasons = append(reasons, fmt.Sprintf("best aligned with %s Tensor Core generations", gpu.Family))
+			case "ada", "ampere":
+				score += 20
+				reasons = append(reasons, fmt.Sprintf("fits %s NVIDIA tensor-core kernels well", gpu.Family))
+			default:
+				score += 10
+			}
+		case "triton":
+			score += 16
+			reasons = append(reasons, "good default for rapid NVIDIA kernel iteration")
+		case "cuda_cutlass_cpp":
+			score += 14
+			reasons = append(reasons, "always available as the lowest-level fallback")
+		}
+	}
+
+	switch spec.ID {
+	case "cute_dsl":
+		if containsAny(req.Operators, "matmul", "gemm", "attention", "paged-attention", "moe") {
+			score += 22
+			reasons = append(reasons, "well suited for tensor-core-heavy kernels")
+		}
+		if containsAny(req.Goals, "throughput", "latency") {
+			score += 10
+			reasons = append(reasons, "fits production-oriented performance work")
+		}
+		if matchesBucket(req.Precision, []string{"bf16", "fp16", "fp8", "fp4", "int8", "int4"}) {
+			score += 10
+			reasons = append(reasons, fmt.Sprintf("supports low-precision NVIDIA paths like %s", req.Precision))
+		}
+	case "triton":
+		if containsAny(req.Operators, "layernorm", "rmsnorm", "silu", "gelu", "dequantization", "attention", "kv-cache", "softmax") {
+			score += 22
+			reasons = append(reasons, "strong for fused memory-bound Python-authored kernels")
+		}
+		if bottleneck == "memory" || bottleneck == "mixed" {
+			score += 10
+			reasons = append(reasons, fmt.Sprintf("good fit for %s bottlenecks and fast iteration loops", bottleneck))
+		}
+		if req.Workload == "decode" || req.Workload == "serving" {
+			score += 8
+			reasons = append(reasons, fmt.Sprintf("common choice for %s kernel experiments", req.Workload))
+		}
+	case "cuda_cutlass_cpp":
+		if req.Workload == "decode" || bottleneck == "latency" {
+			score += 12
+			reasons = append(reasons, "useful when launch structure and runtime integration matter more than authoring speed")
+		}
+		if containsAny(req.Goals, "throughput", "latency") {
+			score += 8
+			reasons = append(reasons, "good escape hatch when the winning kernel needs full low-level control")
+		}
+		if containsAny(req.Operators, "attention", "paged-attention", "collective", "matmul", "gemm") {
+			score += 8
+			reasons = append(reasons, "handles specialized kernels that outgrow higher-level DSLs")
+		}
+	}
+
+	if len(reasons) == 0 {
+		reasons = append(reasons, spec.Summary)
+	}
+
+	return score, reasons
+}
+
+func canonicalGPUFamily(value string) string {
+	return strings.TrimSpace(strings.ToLower(value))
+}
+
+func parseModelParamsBillions(model string) float64 {
+	model = canonicalText(model)
+	if model == "" {
+		return 0
+	}
+
+	re := regexp.MustCompile(`(\d+(?:\.\d+)?)\s*b`)
+	match := re.FindStringSubmatch(model)
+	if len(match) < 2 {
+		return 0
+	}
+	value, err := strconv.ParseFloat(match[1], 64)
+	if err != nil {
+		return 0
+	}
+	return value
+}
+
+func estimateWeightFootprintGB(paramsB float64, precision string) float64 {
+	if paramsB <= 0 {
+		return 0
+	}
+	bytesPerParam := map[string]float64{
+		"bf16":     2.0,
+		"fp16":     2.0,
+		"fp8":      1.0,
+		"int8":     1.0,
+		"int4":     0.5,
+		"awq-int4": 0.5,
+		"nvfp4":    0.5,
+	}
+	return paramsB * bytesPerParam[canonicalText(precision)]
+}
+
+func canonicalText(value string) string {
+	return strings.TrimSpace(strings.ToLower(value))
 }
 
 func (p *Planner) scoreStrategy(strategy kb.Strategy, req Request, gpu *kb.GPUProfile, bottleneck string) (Recommendation, bool) {

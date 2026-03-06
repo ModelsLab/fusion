@@ -12,14 +12,21 @@ func NewRootCommand() *cobra.Command {
 		Short:         "Fusion plans GPU inference optimizations and manages an embedded kernel knowledge base.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		RunE:          runDefaultChat,
 	}
 
 	cmd.AddCommand(
 		newAuthCommand(),
+		newChatCommand(),
 		newEnvCommand(),
 		newGPUCommand(),
 		newKnowledgeCommand(),
+		newLoginCommand(),
 		newOptimizeCommand(),
+		newTargetCommand(),
+		newBenchmarkCommand(),
+		newProfileCommand(),
+		newUpdateCommand(),
 		newVersionCommand(),
 	)
 

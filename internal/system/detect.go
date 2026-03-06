@@ -90,7 +90,9 @@ func detectToolchain() []ToolStatus {
 		version string
 	}{
 		{name: "go", args: []string{"version"}, notes: "Builds the Fusion CLI itself."},
-		{name: "python3", args: []string{"--version"}, notes: "Useful for Triton kernels and profiling glue."},
+		{name: "python3", args: []string{"--version"}, notes: "Useful for CuTe DSL, Triton kernels, and profiling glue."},
+		{name: "ssh", args: []string{"-V"}, notes: "Needed for remote execution on Ubuntu GPU targets."},
+		{name: "scp", args: []string{"-h"}, version: "scp", notes: "Needed for copying kernels and benchmark assets to remote targets."},
 		{name: "nvidia-smi", args: []string{"--help"}, version: "nvidia-smi", notes: "Primary NVIDIA device detection on Linux hosts."},
 		{name: "nvcc", args: []string{"--version"}, notes: "Required for CUDA C++ compilation flows."},
 		{name: "ncu", args: []string{"--version"}, notes: "Nsight Compute CLI for kernel metrics and bottleneck analysis."},

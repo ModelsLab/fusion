@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/ModelsLab/fusion/internal/kb"
 	"github.com/spf13/cobra"
 )
 
@@ -17,6 +19,7 @@ func newKnowledgeCommand() *cobra.Command {
 		newKBListCommand(),
 		newKBSearchCommand(),
 		newKBShowCommand(),
+		newKBContextCommand(),
 	)
 
 	return cmd
@@ -47,6 +50,28 @@ func newKBListCommand() *cobra.Command {
 					cmd.Printf("  preferred: %s\n", joinOrFallback(gpu.PreferredPrecisions, "n/a"))
 					cmd.Printf("  strengths: %s\n", joinOrFallback(gpu.Strengths, "n/a"))
 				}
+			case "skills", "skill":
+				for _, skill := range runtimeState.KB.Skills {
+					cmd.Printf("%s [%s]\n", skill.Title, skill.SupportLevel)
+					cmd.Printf("  id: %s\n", skill.ID)
+					cmd.Printf("  summary: %s\n", skill.Summary)
+					cmd.Printf("  backends: %s\n", joinOrFallback(skill.PreferredBackends, "n/a"))
+					cmd.Printf("  runtimes: %s\n", joinOrFallback(skill.RuntimeAdapters, "n/a"))
+				}
+			case "examples", "example", "patterns", "pattern":
+				for _, example := range runtimeState.KB.Examples {
+					cmd.Printf("%s [%s]\n", example.Title, example.SupportLevel)
+					cmd.Printf("  id: %s\n", example.ID)
+					cmd.Printf("  backend: %s\n", example.Backend)
+					cmd.Printf("  summary: %s\n", example.Summary)
+				}
+			case "documents", "document", "docs", "doc", "notes", "note":
+				for _, document := range runtimeState.KB.Documents {
+					cmd.Printf("%s [%s/%s]\n", document.Title, valueOrFallback(document.Reliability, "curated"), valueOrFallback(document.ReviewStatus, "reviewed"))
+					cmd.Printf("  id: %s\n", document.ID)
+					cmd.Printf("  path: %s\n", document.Path)
+					cmd.Printf("  summary: %s\n", document.Summary)
+				}
 			default:
 				for _, strategy := range runtimeState.KB.Strategies {
 					cmd.Printf("%s [%s]\n", strategy.Title, strategy.SupportLevel)
@@ -61,7 +86,7 @@ func newKBListCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&kind, "kind", "strategies", "kind to list: strategies, gpus, sources")
+	cmd.Flags().StringVar(&kind, "kind", "strategies", "kind to list: strategies, gpus, sources, skills, examples, documents")
 	return cmd
 }
 
@@ -97,7 +122,7 @@ func newKBSearchCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&kind, "kind", "all", "kind to search: all, strategies, gpus, sources")
+	cmd.Flags().StringVar(&kind, "kind", "all", "kind to search: all, strategies, gpus, sources, skills, examples, documents")
 	cmd.Flags().IntVar(&limit, "limit", 8, "maximum number of results")
 	return cmd
 }
@@ -145,6 +170,72 @@ func newKBShowCommand() *cobra.Command {
 				cmd.Printf("strengths: %s\n", joinOrFallback(gpu.Strengths, "n/a"))
 				cmd.Printf("constraints: %s\n", joinOrFallback(gpu.Constraints, "n/a"))
 				cmd.Printf("sources: %s\n", joinOrFallback(gpu.SourceIDs, "n/a"))
+			case "skill":
+				skill, ok := runtimeState.KB.SkillByID(id)
+				if !ok {
+					return fmt.Errorf("skill %q not found", id)
+				}
+				cmd.Printf("%s\n", skill.Title)
+				cmd.Printf("id: %s\n", skill.ID)
+				cmd.Printf("category: %s\n", skill.Category)
+				cmd.Printf("support: %s\n", skill.SupportLevel)
+				cmd.Printf("summary: %s\n", skill.Summary)
+				cmd.Printf("gpu families: %s\n", joinOrFallback(skill.Triggers.GPUFamilies, "all"))
+				cmd.Printf("workloads: %s\n", joinOrFallback(skill.Triggers.Workloads, "all"))
+				cmd.Printf("operators: %s\n", joinOrFallback(skill.Triggers.Operators, "general"))
+				cmd.Printf("precision: %s\n", joinOrFallback(skill.Triggers.Precision, "any"))
+				cmd.Printf("runtimes: %s\n", joinOrFallback(skill.RuntimeAdapters, "n/a"))
+				cmd.Printf("backends: %s\n", joinOrFallback(skill.PreferredBackends, "n/a"))
+				cmd.Printf("tools: %s\n", joinOrFallback(skill.RequiredTools, "n/a"))
+				cmd.Printf("steps: %s\n", joinOrFallback(skill.Steps, "none"))
+				cmd.Printf("verification: %s\n", joinOrFallback(skill.Verification, "none"))
+				cmd.Printf("benchmark rubric: %s\n", joinOrFallback(skill.BenchmarkRubric, "none"))
+				cmd.Printf("recovery: %s\n", joinOrFallback(skill.FailureRecovery, "none"))
+				cmd.Printf("artifacts: %s\n", joinOrFallback(skill.ArtifactsToSave, "none"))
+				cmd.Printf("sources: %s\n", joinOrFallback(skill.ReferenceSourceIDs, "n/a"))
+			case "example":
+				example, ok := runtimeState.KB.ExampleByID(id)
+				if !ok {
+					return fmt.Errorf("example %q not found", id)
+				}
+				cmd.Printf("%s\n", example.Title)
+				cmd.Printf("id: %s\n", example.ID)
+				cmd.Printf("category: %s\n", example.Category)
+				cmd.Printf("backend: %s\n", example.Backend)
+				cmd.Printf("support: %s\n", example.SupportLevel)
+				cmd.Printf("summary: %s\n", example.Summary)
+				cmd.Printf("gpu families: %s\n", joinOrFallback(example.GPUFamilies, "all"))
+				cmd.Printf("workloads: %s\n", joinOrFallback(example.Workloads, "all"))
+				cmd.Printf("operators: %s\n", joinOrFallback(example.Operators, "general"))
+				cmd.Printf("precision: %s\n", joinOrFallback(example.Precision, "any"))
+				cmd.Printf("runtimes: %s\n", joinOrFallback(example.Runtimes, "n/a"))
+				cmd.Printf("use cases: %s\n", joinOrFallback(example.UseCases, "n/a"))
+				cmd.Printf("notes: %s\n", joinOrFallback(example.Notes, "none"))
+				cmd.Printf("sources: %s\n", joinOrFallback(example.SourceIDs, "n/a"))
+			case "document":
+				document, ok := runtimeState.KB.DocumentByID(id)
+				if !ok {
+					return fmt.Errorf("document %q not found", id)
+				}
+				cmd.Printf("%s\n", document.Title)
+				cmd.Printf("id: %s\n", document.ID)
+				cmd.Printf("category: %s\n", document.Category)
+				cmd.Printf("support: %s\n", valueOrFallback(document.SupportLevel, "curated"))
+				cmd.Printf("reliability: %s\n", valueOrFallback(document.Reliability, "curated"))
+				cmd.Printf("review status: %s\n", valueOrFallback(document.ReviewStatus, "reviewed"))
+				cmd.Printf("path: %s\n", document.Path)
+				cmd.Printf("url: %s\n", valueOrFallback(document.URL, "n/a"))
+				cmd.Printf("summary: %s\n", document.Summary)
+				cmd.Printf("gpu families: %s\n", joinOrFallback(document.GPUFamilies, "all"))
+				cmd.Printf("workloads: %s\n", joinOrFallback(document.Workloads, "all"))
+				cmd.Printf("operators: %s\n", joinOrFallback(document.Operators, "general"))
+				cmd.Printf("precision: %s\n", joinOrFallback(document.Precision, "any"))
+				cmd.Printf("runtimes: %s\n", joinOrFallback(document.Runtimes, "n/a"))
+				cmd.Printf("backends: %s\n", joinOrFallback(document.Backends, "n/a"))
+				cmd.Printf("sources: %s\n", joinOrFallback(document.SourceIDs, "n/a"))
+				if strings.TrimSpace(document.Body) != "" {
+					cmd.Printf("body:\n%s\n", document.Body)
+				}
 			default:
 				strategy, ok := runtimeState.KB.StrategyByID(id)
 				if !ok {
@@ -169,8 +260,44 @@ func newKBShowCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&kind, "kind", "strategy", "kind to show: strategy, gpu, source")
+	cmd.Flags().StringVar(&kind, "kind", "strategy", "kind to show: strategy, gpu, source, skill, example, document")
 	cmd.Flags().StringVar(&id, "id", "", "knowledge object id")
 	cmd.MarkFlagRequired("id")
+	return cmd
+}
+
+func newKBContextCommand() *cobra.Command {
+	var req kb.ContextRequest
+
+	cmd := &cobra.Command{
+		Use:   "context",
+		Short: "Build a ranked context packet for a GPU optimization request",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			runtimeState, err := loadRuntime()
+			if err != nil {
+				return err
+			}
+
+			packet := runtimeState.KB.BuildContextPacket(req)
+			data, err := json.MarshalIndent(packet, "", "  ")
+			if err != nil {
+				return err
+			}
+			cmd.Println(string(data))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&req.Query, "query", "", "free-form query text")
+	cmd.Flags().StringVar(&req.GPU, "gpu", "", "GPU id or name")
+	cmd.Flags().StringVar(&req.Model, "model", "", "model name or family")
+	cmd.Flags().StringVar(&req.Workload, "workload", "", "decode, prefill, serving, or training-prep")
+	cmd.Flags().StringSliceVar(&req.Operators, "operators", nil, "operator families")
+	cmd.Flags().StringVar(&req.Precision, "precision", "", "precision or quantization path")
+	cmd.Flags().StringVar(&req.Bottleneck, "bottleneck", "", "memory, compute, latency, or mixed")
+	cmd.Flags().StringVar(&req.Runtime, "runtime", "", "runtime like vllm, tensorrt-llm, transformers, or sglang")
+	cmd.Flags().StringSliceVar(&req.Goals, "goals", nil, "optimization goals")
+	cmd.Flags().BoolVar(&req.IncludeExperimental, "experimental", false, "include experimental strategies, skills, and examples")
+	cmd.Flags().IntVar(&req.Limit, "limit", 4, "maximum number of strategies, skills, and examples to return")
 	return cmd
 }

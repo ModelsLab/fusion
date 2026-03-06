@@ -4,6 +4,7 @@ project_name: fusion
 
 before:
   hooks:
+    - go run ./scripts/build_knowledge_db.go
     - go mod tidy
     - go test ./...
 

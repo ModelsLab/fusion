@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ModelsLab/fusion/internal/config"
 	"github.com/ModelsLab/fusion/internal/kb"
 )
 
@@ -30,4 +31,36 @@ func formatSourceList(sources []kb.Source) string {
 		lines = append(lines, fmt.Sprintf("%s (%s)", source.Title, source.URL))
 	}
 	return strings.Join(lines, "; ")
+}
+
+func resolveTarget(runtimeState *runtimeState, name string) (config.TargetConfig, string, error) {
+	cfg, err := runtimeState.Config.Load()
+	if err != nil {
+		return config.TargetConfig{}, "", err
+	}
+
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = strings.TrimSpace(cfg.DefaultTarget)
+	}
+	if name == "" {
+		return config.TargetConfig{
+			Name: "local",
+			Mode: "local",
+		}, "local", nil
+	}
+
+	target, ok := cfg.Targets[name]
+	if !ok {
+		return config.TargetConfig{}, "", fmt.Errorf("target %q is not configured", name)
+	}
+
+	return target, name, nil
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
