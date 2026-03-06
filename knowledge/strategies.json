@@ -1,0 +1,464 @@
+[
+  {
+    "id": "baseline_profile_first",
+    "title": "Profile Before Rewriting Kernels",
+    "category": "workflow",
+    "summary": "Capture a clean baseline so later kernel work is driven by measured bottlenecks instead of intuition.",
+    "support_level": "stable",
+    "workloads": ["all"],
+    "operators": ["all"],
+    "gpu_families": [],
+    "gpu_ids": [],
+    "precision": ["all"],
+    "bottlenecks": ["all"],
+    "goals": ["throughput", "latency", "memory"],
+    "priority": 100,
+    "preconditions": [
+      "have a reproducible workload with stable batch size and context length",
+      "record both tokens/sec and per-token latency"
+    ],
+    "actions": [
+      "measure a no-change baseline with Nsight Compute or Nsight Systems before changing code",
+      "track achieved occupancy, DRAM throughput, tensor utilization, and kernel launch overhead",
+      "keep the exact same workload for before and after comparisons"
+    ],
+    "metrics": [
+      "tokens/sec",
+      "TTFT",
+      "inter-token latency",
+      "dram__throughput",
+      "sm__throughput"
+    ],
+    "tradeoffs": [
+      "profiling adds upfront time but saves wasted kernel iterations later"
+    ],
+    "source_ids": ["nsight-python", "pytorch-cuda-graphs"]
+  },
+  {
+    "id": "cuda_graphs_decode",
+    "title": "Capture Steady-State Decode With CUDA Graphs",
+    "category": "runtime",
+    "summary": "Steady-state decode often benefits from graph capture once shapes and buffers are stabilized.",
+    "support_level": "stable",
+    "workloads": ["decode", "serving"],
+    "operators": ["attention", "kv-cache"],
+    "gpu_families": ["Ampere", "Ada", "Hopper", "Blackwell"],
+    "gpu_ids": [],
+    "precision": ["bf16", "fp16", "fp8"],
+    "bottlenecks": ["latency", "mixed"],
+    "goals": ["latency", "throughput"],
+    "priority": 82,
+    "preconditions": [
+      "runtime shapes can be bucketed or stabilized",
+      "memory addresses are reusable across decode steps"
+    ],
+    "actions": [
+      "warm up and capture the repeatable decode subgraph after allocations settle",
+      "avoid dynamic allocations and shape churn inside the captured step",
+      "compare graph replay latency against the eager decode baseline"
+    ],
+    "metrics": [
+      "inter-token latency",
+      "kernel launch count",
+      "tokens/sec"
+    ],
+    "tradeoffs": [
+      "dynamic shapes reduce graph capture coverage",
+      "debugging captured graphs is less ergonomic than eager execution"
+    ],
+    "source_ids": ["pytorch-cuda-graphs", "flashinfer-docs"]
+  },
+  {
+    "id": "paged_kv_cache",
+    "title": "Use Paged KV Cache And Paged Attention Layouts",
+    "category": "memory",
+    "summary": "Paged KV layouts are a first-class serving optimization for decode-heavy transformer inference.",
+    "support_level": "stable",
+    "workloads": ["decode", "serving"],
+    "operators": ["attention", "kv-cache", "paged-attention"],
+    "gpu_families": [],
+    "gpu_ids": [],
+    "precision": ["bf16", "fp16", "fp8", "int8", "int4"],
+    "bottlenecks": ["memory", "latency", "mixed"],
+    "goals": ["throughput", "latency", "memory"],
+    "priority": 95,
+    "preconditions": [
+      "serving stack can manage block tables or page metadata",
+      "decode is a meaningful part of the latency budget"
+    ],
+    "actions": [
+      "move KV allocation to paged blocks instead of contiguous per-request slabs",
+      "match the attention kernel to the chosen page and block layout",
+      "re-measure memory fragmentation and end-to-end decode throughput"
+    ],
+    "metrics": [
+      "KV-cache footprint",
+      "tokens/sec",
+      "memory fragmentation"
+    ],
+    "tradeoffs": [
+      "more runtime metadata and allocator complexity",
+      "kernel layout must align with the page format"
+    ],
+    "source_ids": ["vllm-paged-attention", "pagedattention-paper", "flashinfer-docs"]
+  },
+  {
+    "id": "flashinfer_attention",
+    "title": "Prefer FlashInfer Or Similar Serving Attention Kernels",
+    "category": "kernel",
+    "summary": "Serving-focused attention kernels usually beat generic framework paths once batch mixing and paged KV are involved.",
+    "support_level": "stable",
+    "workloads": ["decode", "prefill", "serving"],
+    "operators": ["attention", "kv-cache", "paged-attention"],
+    "gpu_families": ["Ampere", "Ada", "Hopper", "Blackwell"],
+    "gpu_ids": [],
+    "precision": ["bf16", "fp16", "fp8", "int8", "int4"],
+    "bottlenecks": ["memory", "compute", "mixed"],
+    "goals": ["throughput", "latency"],
+    "priority": 90,
+    "preconditions": [
+      "the model runtime can call a serving-optimized attention backend",
+      "sequence layout matches the backend kernel contracts"
+    ],
+    "actions": [
+      "benchmark serving-focused attention backends before writing a custom kernel",
+      "compare prefill and decode separately because the winning backend may differ",
+      "keep paged KV layout and backend configuration aligned"
+    ],
+    "metrics": [
+      "attention kernel time",
+      "tokens/sec",
+      "dram throughput"
+    ],
+    "tradeoffs": [
+      "backend-specific layouts can reduce portability",
+      "operator coverage differs across serving stacks"
+    ],
+    "source_ids": ["flashinfer-docs", "flashinfer-repo", "rightnow-qwen35-triton"]
+  },
+  {
+    "id": "fused_dequant_gemm",
+    "title": "Fuse Dequantization Into GEMM For Quantized Paths",
+    "category": "kernel",
+    "summary": "Quantized inference often wins by fusing dequant work directly into GEMM instead of materializing higher-precision weights.",
+    "support_level": "stable",
+    "workloads": ["prefill", "decode", "serving"],
+    "operators": ["matmul", "gemm", "quantization"],
+    "gpu_families": ["Ampere", "Ada", "Hopper", "Blackwell"],
+    "gpu_ids": [],
+    "precision": ["int4", "int8"],
+    "bottlenecks": ["memory", "mixed"],
+    "goals": ["throughput", "memory", "cost"],
+    "priority": 88,
+    "preconditions": [
+      "weights are quantized or can be quantized without violating quality constraints"
+    ],
+    "actions": [
+      "benchmark fused dequant GEMM paths before materializing fp16 or bf16 weights",
+      "keep epilogue fusion close to the GEMM when activations remain bandwidth-sensitive",
+      "compare decode and prefill independently because the best quantization path may differ"
+    ],
+    "metrics": [
+      "GEMM time",
+      "HBM read volume",
+      "tokens/sec"
+    ],
+    "tradeoffs": [
+      "calibration and accuracy checks are mandatory",
+      "kernel variants multiply once group size and quant format vary"
+    ],
+    "source_ids": ["tensorrt-llm-docs", "triton-tutorials"]
+  },
+  {
+    "id": "epilogue_fusion",
+    "title": "Fuse Epilogues And Adjacent Pointwise Work",
+    "category": "kernel",
+    "summary": "Operator fusion is still one of the fastest ways to cut HBM traffic on transformer blocks.",
+    "support_level": "stable",
+    "workloads": ["prefill", "decode", "serving"],
+    "operators": ["matmul", "norm", "rope", "activation"],
+    "gpu_families": [],
+    "gpu_ids": [],
+    "precision": ["bf16", "fp16", "fp8", "int8", "int4"],
+    "bottlenecks": ["memory", "mixed"],
+    "goals": ["throughput", "latency", "memory"],
+    "priority": 84,
+    "preconditions": [
+      "the fused region is performance-critical and numerically stable under fusion"
+    ],
+    "actions": [
+      "fuse bias, activation, norm, or rope steps when they currently materialize full intermediates",
+      "keep fusion decisions aligned with the downstream runtime so kernels remain callable",
+      "verify the fused kernel numerically against the reference path"
+    ],
+    "metrics": [
+      "kernel count",
+      "HBM traffic",
+      "end-to-end latency"
+    ],
+    "tradeoffs": [
+      "larger kernels can become harder to tune and maintain",
+      "fusion can complicate framework integration"
+    ],
+    "source_ids": ["triton-tutorials", "rightnow-qwen35-triton", "rightnow-tile"]
+  },
+  {
+    "id": "fp8_transformer_engine",
+    "title": "Use FP8 Paths First On Hopper And Blackwell",
+    "category": "precision",
+    "summary": "Hopper and Blackwell should usually validate mature FP8 inference paths before custom kernel work.",
+    "support_level": "stable",
+    "workloads": ["prefill", "decode", "serving"],
+    "operators": ["matmul", "gemm", "attention"],
+    "gpu_families": ["Hopper", "Blackwell"],
+    "gpu_ids": ["h100", "b200"],
+    "precision": ["fp8"],
+    "bottlenecks": ["compute", "memory", "mixed"],
+    "goals": ["throughput", "memory", "cost"],
+    "priority": 94,
+    "preconditions": [
+      "the model tolerates FP8 calibration and validation",
+      "runtime stack supports the chosen FP8 serving path"
+    ],
+    "actions": [
+      "benchmark an FP8 path in TensorRT-LLM or an equivalent mature serving runtime first",
+      "validate accuracy before investing in more custom kernel work",
+      "only hand-write kernels after the FP8 baseline is known"
+    ],
+    "metrics": [
+      "tokens/sec",
+      "quality drift",
+      "tensor core utilization"
+    ],
+    "tradeoffs": [
+      "calibration quality matters",
+      "some model components may need fallback higher-precision paths"
+    ],
+    "source_ids": ["nvidia-h100", "nvidia-blackwell-architecture", "tensorrt-llm-docs"]
+  },
+  {
+    "id": "block_scaled_low_precision",
+    "title": "Try Block-Scaled Low-Precision Kernels On Blackwell",
+    "category": "precision",
+    "summary": "Blackwell makes block-scaled low-precision paths materially more attractive than on earlier generations.",
+    "support_level": "experimental",
+    "workloads": ["prefill", "decode"],
+    "operators": ["matmul", "gemm"],
+    "gpu_families": ["Blackwell"],
+    "gpu_ids": ["rtx5090", "b200"],
+    "precision": ["fp8", "fp6", "fp4", "nvfp4"],
+    "bottlenecks": ["compute", "memory"],
+    "goals": ["throughput", "cost", "memory"],
+    "priority": 83,
+    "preconditions": [
+      "toolchain and runtime support the targeted low-precision format",
+      "model quality is validated against the reduced precision path"
+    ],
+    "actions": [
+      "start from Triton block-scaled examples instead of inventing a layout from scratch",
+      "benchmark against an FP8 baseline so the incremental value is measurable",
+      "treat correctness and calibration drift as first-class gates"
+    ],
+    "metrics": [
+      "GEMM throughput",
+      "quality drift",
+      "memory footprint"
+    ],
+    "tradeoffs": [
+      "tooling coverage is still evolving",
+      "portability to non-Blackwell stacks is limited"
+    ],
+    "source_ids": ["triton-block-scaled-matmul", "nvidia-blackwell-architecture"]
+  },
+  {
+    "id": "moe_grouped_gemm",
+    "title": "Use Grouped GEMM For MoE Hot Paths",
+    "category": "kernel",
+    "summary": "MoE experts usually need grouped GEMM or equivalent batching to keep tensor cores busy.",
+    "support_level": "stable",
+    "workloads": ["prefill", "decode", "serving"],
+    "operators": ["moe", "matmul", "gemm"],
+    "gpu_families": [],
+    "gpu_ids": [],
+    "precision": ["bf16", "fp16", "fp8", "int8", "int4"],
+    "bottlenecks": ["compute", "mixed"],
+    "goals": ["throughput", "latency"],
+    "priority": 80,
+    "preconditions": [
+      "the model has expert routing or sparse expert activation"
+    ],
+    "actions": [
+      "replace many tiny per-expert GEMMs with grouped or batched GEMM paths",
+      "tune the schedule separately for prefill and decode because token routing sparsity changes"
+    ],
+    "metrics": [
+      "expert kernel time",
+      "tensor core utilization",
+      "tokens/sec"
+    ],
+    "tradeoffs": [
+      "routing imbalance can still dominate",
+      "kernel schedules become more model-specific"
+    ],
+    "source_ids": ["triton-tutorials", "tensorrt-llm-docs"]
+  },
+  {
+    "id": "per_gpu_specialization",
+    "title": "Maintain Per-GPU Kernel Variants",
+    "category": "workflow",
+    "summary": "Different GPUs deserve different tile sizes, launch parameters, and sometimes entirely different kernels.",
+    "support_level": "stable",
+    "workloads": ["all"],
+    "operators": ["all"],
+    "gpu_families": ["Ampere", "Ada", "Hopper", "Blackwell"],
+    "gpu_ids": ["rtx3090", "rtx4090", "rtx5090", "h100", "b200", "l4"],
+    "precision": ["all"],
+    "bottlenecks": ["all"],
+    "goals": ["throughput", "latency", "portability"],
+    "priority": 86,
+    "preconditions": [
+      "benchmark infrastructure can compare variants on the target GPU"
+    ],
+    "actions": [
+      "avoid assuming one kernel configuration is optimal across Ampere, Ada, Hopper, and Blackwell",
+      "store winning variants by GPU family and workload shape",
+      "treat hardware specialization as a normal outcome, not a last resort"
+    ],
+    "metrics": [
+      "best-of-GPU throughput",
+      "latency variance by architecture"
+    ],
+    "tradeoffs": [
+      "more variants mean more maintenance",
+      "benchmark coverage needs to grow with the matrix of GPUs and workloads"
+    ],
+    "source_ids": ["doublegraph", "doubleai-warpspeed", "rightnow-qwen35-triton"]
+  },
+  {
+    "id": "search_loop_agentic",
+    "title": "Use An Iterative Agent Search Loop For Kernel Generation",
+    "category": "workflow",
+    "summary": "Kernel generation should be iterative with correctness, profiling, and retained world knowledge instead of one-shot prompting.",
+    "support_level": "experimental",
+    "workloads": ["all"],
+    "operators": ["all"],
+    "gpu_families": [],
+    "gpu_ids": [],
+    "precision": ["all"],
+    "bottlenecks": ["all"],
+    "goals": ["throughput", "latency", "automation"],
+    "priority": 78,
+    "preconditions": [
+      "the system can compile, verify, benchmark, and store candidate kernels"
+    ],
+    "actions": [
+      "generate multiple candidates instead of trusting a single model output",
+      "persist failed and winning patterns so later searches start from a stronger prior",
+      "keep correctness and profiling in the loop after every generation step"
+    ],
+    "metrics": [
+      "search iterations to first win",
+      "win rate over baseline",
+      "correctness pass rate"
+    ],
+    "tradeoffs": [
+      "agent loops can burn a lot of compute without strong pruning and caching"
+    ],
+    "source_ids": ["k-search", "cuda-agent"]
+  },
+  {
+    "id": "kv_cache_compression",
+    "title": "Compress Or Quantize KV Cache For Long Context",
+    "category": "memory",
+    "summary": "When long-context decode is dominated by KV movement, KV compression can matter more than new math kernels.",
+    "support_level": "experimental",
+    "workloads": ["decode", "serving"],
+    "operators": ["kv-cache", "attention"],
+    "gpu_families": [],
+    "gpu_ids": [],
+    "precision": ["bf16", "fp16", "fp8", "int8", "int4"],
+    "bottlenecks": ["memory"],
+    "goals": ["memory", "throughput", "cost"],
+    "priority": 76,
+    "preconditions": [
+      "context length is large enough that KV cache dominates memory traffic",
+      "accuracy impact is acceptable for the target workload"
+    ],
+    "actions": [
+      "treat KV compression as a separate benchmark track from weight quantization",
+      "measure memory savings, throughput, and quality together before rollout"
+    ],
+    "metrics": [
+      "KV footprint",
+      "throughput",
+      "quality drift"
+    ],
+    "tradeoffs": [
+      "extra complexity in cache management and dequantization",
+      "quality sensitivity varies by model and task"
+    ],
+    "source_ids": ["xkv-paper", "titanus-paper", "flashinfer-docs"]
+  },
+  {
+    "id": "long_context_sparse_attention",
+    "title": "Evaluate Sparse Attention For Long-Context Serving",
+    "category": "attention",
+    "summary": "Long-context serving sometimes needs sparse or hybrid attention instead of denser kernel tuning alone.",
+    "support_level": "experimental",
+    "workloads": ["prefill", "decode", "serving"],
+    "operators": ["attention"],
+    "gpu_families": [],
+    "gpu_ids": [],
+    "precision": ["bf16", "fp16", "fp8"],
+    "bottlenecks": ["memory", "compute"],
+    "goals": ["throughput", "memory"],
+    "priority": 70,
+    "preconditions": [
+      "long context is a primary product requirement rather than an edge case"
+    ],
+    "actions": [
+      "benchmark sparse or hybrid attention variants against paged dense baselines",
+      "treat algorithmic change separately from kernel tuning so wins are attributable"
+    ],
+    "metrics": [
+      "throughput at long context",
+      "quality drift",
+      "memory use"
+    ],
+    "tradeoffs": [
+      "algorithmic changes can alter model behavior",
+      "sparse paths add runtime complexity"
+    ],
+    "source_ids": ["lserve-paper", "pagedattention-paper"]
+  },
+  {
+    "id": "remote_multi_gpu_validation",
+    "title": "Validate Winning Kernels Across Remote GPU Fleets",
+    "category": "workflow",
+    "summary": "A kernel that wins on one GPU should be rechecked across the real deployment fleet before being promoted.",
+    "support_level": "stable",
+    "workloads": ["all"],
+    "operators": ["all"],
+    "gpu_families": [],
+    "gpu_ids": [],
+    "precision": ["all"],
+    "bottlenecks": ["all"],
+    "goals": ["portability", "throughput", "latency"],
+    "priority": 72,
+    "preconditions": [
+      "remote GPU access exists through SSH or cloud APIs"
+    ],
+    "actions": [
+      "replay the same benchmark suite across the target deployment GPUs",
+      "keep per-GPU winners instead of forcing a single universal kernel"
+    ],
+    "metrics": [
+      "best variant by GPU",
+      "regression rate across fleet"
+    ],
+    "tradeoffs": [
+      "fleet validation adds time and infrastructure cost"
+    ],
+    "source_ids": ["rightnow-gpuci", "doublegraph"]
+  }
+]
