@@ -4,7 +4,7 @@ kind: skill
 title: FP8 Serving Evaluation
 type: ""
 category: precision
-summary: Validate mature FP8 deployment branches before investing in custom tensor-core kernel work on Hopper or Blackwell.
+summary: Validate packaged or synthesized FP8 deployment branches before investing in custom tensor-core kernel work on Hopper or Blackwell.
 support_level: stable
 reliability: ""
 review_status: ""
@@ -61,7 +61,9 @@ required_tools:
   - search_knowledge_base
 steps:
   - measure the higher-precision control path first
-  - enable the strongest runtime-supported FP8 branch for the same benchmark suite
+  - if the model already has a packaged FP8 checkpoint or runtime flavor, test that first
+  - if no packaged FP8 checkpoint exists, try synthesizing one with TensorRT Model Optimizer, Transformer Engine, torchao float8 flows, or llm-compressor using the same benchmark suite
+  - record calibration data, quantization configuration, and any higher-precision fallback modules
   - track quality drift and throughput together before any custom kernel work
   - only move beyond the FP8 path if the hot operator remains dominant after the runtime baseline
 verification:
@@ -73,6 +75,7 @@ benchmark_rubric:
   - store the exact runtime and calibration configuration with the result
 failure_recovery:
   - fallback to bf16 or fp16 for unstable layers
+  - fallback to weight-only or mixed-precision quantization if full FP8 activation paths regress quality or fail in the runtime
   - switch to AWQ or KV-cache optimization if the remaining bottleneck is mostly memory traffic
 artifacts_to_save:
   - benchmark_json
@@ -87,6 +90,9 @@ reference_source_ids:
   - nvidia-transformer-engine
   - tensorrt-llm-docs
   - nvidia-blackwell-cutlass
+  - nvidia-tensorrt-model-optimizer
+  - llm-compressor
+  - torchao
 backend: ""
 runtimes:
   - tensorrt-llm
@@ -102,7 +108,9 @@ path: ""
 ## Steps
 
 - measure the higher-precision control path first
-- enable the strongest runtime-supported FP8 branch for the same benchmark suite
+- if the model already has a packaged FP8 checkpoint or runtime flavor, test that first
+- if no packaged FP8 checkpoint exists, try synthesizing one with TensorRT Model Optimizer, Transformer Engine, torchao float8 flows, or llm-compressor using the same benchmark suite
+- record calibration data, quantization configuration, and any higher-precision fallback modules
 - track quality drift and throughput together before any custom kernel work
 - only move beyond the FP8 path if the hot operator remains dominant after the runtime baseline
 
@@ -120,4 +128,5 @@ path: ""
 ## Failure Recovery
 
 - fallback to bf16 or fp16 for unstable layers
+- fallback to weight-only or mixed-precision quantization if full FP8 activation paths regress quality or fail in the runtime
 - switch to AWQ or KV-cache optimization if the remaining bottleneck is mostly memory traffic

@@ -24,6 +24,10 @@ source_ids:
   - nvidia-h100
   - nvidia-blackwell-architecture
   - tensorrt-llm-docs
+  - nvidia-tensorrt-model-optimizer
+  - llm-compressor
+  - nvidia-transformer-engine
+  - torchao
 workloads:
   - prefill
   - decode
@@ -53,7 +57,9 @@ preconditions:
   - the model tolerates FP8 calibration and validation
   - runtime stack supports the chosen FP8 serving path
 actions:
-  - benchmark an FP8 path in TensorRT-LLM or an equivalent mature serving runtime first
+  - benchmark a packaged FP8 path in TensorRT-LLM, vLLM, SGLang, or an equivalent mature serving runtime first when one already exists
+  - if no packaged FP8 checkpoint exists, synthesize one with NVIDIA Model Optimizer, Transformer Engine, torchao float8 flows, or llm-compressor when the runtime and GPU support it
+  - run calibration, save the quantization recipe, and validate output quality before spending time on custom kernels
   - validate accuracy before investing in more custom kernel work
   - only hand-write kernels after the FP8 baseline is known
 metrics:
@@ -63,6 +69,7 @@ metrics:
 tradeoffs:
   - calibration quality matters
   - some model components may need fallback higher-precision paths
+  - FP8 conversion can improve throughput and memory use, but unsupported operators or unstable layers may force mixed-precision fallbacks
 preferred_backends: []
 required_tools: []
 steps: []
@@ -83,7 +90,9 @@ path: ""
 
 ## Actions
 
-- benchmark an FP8 path in TensorRT-LLM or an equivalent mature serving runtime first
+- benchmark a packaged FP8 path in TensorRT-LLM, vLLM, SGLang, or an equivalent mature serving runtime first when one already exists
+- if no packaged FP8 checkpoint exists, synthesize one with NVIDIA Model Optimizer, Transformer Engine, torchao float8 flows, or llm-compressor when the runtime and GPU support it
+- run calibration, save the quantization recipe, and validate output quality before spending time on custom kernels
 - validate accuracy before investing in more custom kernel work
 - only hand-write kernels after the FP8 baseline is known
 
@@ -91,6 +100,7 @@ path: ""
 
 - calibration quality matters
 - some model components may need fallback higher-precision paths
+- FP8 conversion can improve throughput and memory use, but unsupported operators or unstable layers may force mixed-precision fallbacks
 
 ## Metrics
 
