@@ -25,4 +25,10 @@ func TestRootCommandHelpFlag(t *testing.T) {
 	if !strings.Contains(output, "fusion [flags]") {
 		t.Fatalf("expected root usage line, got %q", output)
 	}
+	if !strings.Contains(output, "hf") {
+		t.Fatalf("expected hf command in help output, got %q", output)
+	}
+	if !strings.Contains(output, "github") {
+		t.Fatalf("expected github command in help output, got %q", output)
+	}
 }

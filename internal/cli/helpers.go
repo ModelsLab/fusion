@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/ModelsLab/fusion/internal/config"
+	"github.com/ModelsLab/fusion/internal/githubauth"
+	"github.com/ModelsLab/fusion/internal/huggingface"
 	"github.com/ModelsLab/fusion/internal/kb"
 )
 
@@ -56,6 +58,56 @@ func resolveTarget(runtimeState *runtimeState, name string) (config.TargetConfig
 	}
 
 	return target, name, nil
+}
+
+func resolveHuggingFaceToken(runtimeState *runtimeState) (string, error) {
+	cfg, err := runtimeState.Config.Load()
+	if err != nil {
+		return "", err
+	}
+
+	token := strings.TrimSpace(cfg.HuggingFace.Token)
+	if token == "" {
+		token = huggingface.TokenFromEnv()
+	}
+	return token, nil
+}
+
+func resolveGitHubToken(runtimeState *runtimeState) (string, error) {
+	cfg, err := runtimeState.Config.Load()
+	if err != nil {
+		return "", err
+	}
+
+	token := strings.TrimSpace(cfg.GitHub.Token)
+	if token == "" {
+		token = githubauth.TokenFromEnv()
+	}
+	return token, nil
+}
+
+func runtimeShellEnv(runtimeState *runtimeState) (map[string]string, error) {
+	env := map[string]string{}
+
+	hfToken, err := resolveHuggingFaceToken(runtimeState)
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range huggingface.ShellEnv(hfToken) {
+		env[key] = value
+	}
+	ghToken, err := resolveGitHubToken(runtimeState)
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range githubauth.ShellEnv(ghToken) {
+		env[key] = value
+	}
+
+	if len(env) == 0 {
+		return nil, nil
+	}
+	return env, nil
 }
 
 func shellQuote(value string) string {

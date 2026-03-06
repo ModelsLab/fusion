@@ -62,3 +62,49 @@ func TestResolveTargetUsesDefaultConfiguredTarget(t *testing.T) {
 		t.Fatalf("expected target GPU rtx4090, got %q", target.GPU)
 	}
 }
+
+func TestRuntimeShellEnvIncludesConfiguredHuggingFaceToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	manager, err := config.NewManager()
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.SetHuggingFaceToken("hf-configured"); err != nil {
+		t.Fatalf("SetHuggingFaceToken() error = %v", err)
+	}
+
+	env, err := runtimeShellEnv(&runtimeState{Config: manager})
+	if err != nil {
+		t.Fatalf("runtimeShellEnv() error = %v", err)
+	}
+	if env["HF_TOKEN"] != "hf-configured" {
+		t.Fatalf("expected HF_TOKEN in shell env, got %#v", env)
+	}
+	if env["HUGGING_FACE_HUB_TOKEN"] != "hf-configured" {
+		t.Fatalf("expected HUGGING_FACE_HUB_TOKEN in shell env, got %#v", env)
+	}
+}
+
+func TestRuntimeShellEnvIncludesConfiguredGitHubToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	manager, err := config.NewManager()
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.SetGitHubToken("gh-configured"); err != nil {
+		t.Fatalf("SetGitHubToken() error = %v", err)
+	}
+
+	env, err := runtimeShellEnv(&runtimeState{Config: manager})
+	if err != nil {
+		t.Fatalf("runtimeShellEnv() error = %v", err)
+	}
+	if env["GITHUB_TOKEN"] != "gh-configured" {
+		t.Fatalf("expected GITHUB_TOKEN in shell env, got %#v", env)
+	}
+	if env["GH_TOKEN"] != "gh-configured" {
+		t.Fatalf("expected GH_TOKEN in shell env, got %#v", env)
+	}
+}

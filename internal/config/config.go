@@ -15,6 +15,14 @@ type ModelsLabConfig struct {
 	Model string `json:"model,omitempty"`
 }
 
+type HuggingFaceConfig struct {
+	Token string `json:"token,omitempty"`
+}
+
+type GitHubConfig struct {
+	Token string `json:"token,omitempty"`
+}
+
 type TargetConfig struct {
 	Name         string `json:"name"`
 	Mode         string `json:"mode"`
@@ -32,6 +40,8 @@ type TargetConfig struct {
 type Config struct {
 	Version       int                     `json:"version"`
 	ModelsLab     ModelsLabConfig         `json:"modelslab,omitempty"`
+	HuggingFace   HuggingFaceConfig       `json:"huggingface,omitempty"`
+	GitHub        GitHubConfig            `json:"github,omitempty"`
 	DefaultTarget string                  `json:"default_target,omitempty"`
 	Targets       map[string]TargetConfig `json:"targets,omitempty"`
 }
@@ -72,6 +82,8 @@ func (m *Manager) Load() (Config, error) {
 	type diskConfig struct {
 		Version         int                             `json:"version"`
 		ModelsLab       ModelsLabConfig                 `json:"modelslab,omitempty"`
+		HuggingFace     HuggingFaceConfig               `json:"huggingface,omitempty"`
+		GitHub          GitHubConfig                    `json:"github,omitempty"`
 		DefaultTarget   string                          `json:"default_target,omitempty"`
 		Targets         map[string]TargetConfig         `json:"targets,omitempty"`
 		DefaultProvider string                          `json:"default_provider,omitempty"`
@@ -86,6 +98,8 @@ func (m *Manager) Load() (Config, error) {
 	cfg := Config{
 		Version:       disk.Version,
 		ModelsLab:     disk.ModelsLab,
+		HuggingFace:   disk.HuggingFace,
+		GitHub:        disk.GitHub,
 		DefaultTarget: disk.DefaultTarget,
 		Targets:       disk.Targets,
 	}
@@ -158,6 +172,42 @@ func (m *Manager) ClearModelsLab() error {
 		return err
 	}
 	cfg.ModelsLab = ModelsLabConfig{}
+	return m.Save(cfg)
+}
+
+func (m *Manager) SetHuggingFaceToken(token string) error {
+	cfg, err := m.Load()
+	if err != nil {
+		return err
+	}
+	cfg.HuggingFace.Token = token
+	return m.Save(cfg)
+}
+
+func (m *Manager) ClearHuggingFace() error {
+	cfg, err := m.Load()
+	if err != nil {
+		return err
+	}
+	cfg.HuggingFace = HuggingFaceConfig{}
+	return m.Save(cfg)
+}
+
+func (m *Manager) SetGitHubToken(token string) error {
+	cfg, err := m.Load()
+	if err != nil {
+		return err
+	}
+	cfg.GitHub.Token = token
+	return m.Save(cfg)
+}
+
+func (m *Manager) ClearGitHub() error {
+	cfg, err := m.Load()
+	if err != nil {
+		return err
+	}
+	cfg.GitHub = GitHubConfig{}
 	return m.Save(cfg)
 }
 

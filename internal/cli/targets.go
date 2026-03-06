@@ -272,10 +272,15 @@ func newTargetExecCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			env, err := runtimeShellEnv(runtimeState)
+			if err != nil {
+				return err
+			}
 
 			result, err := runner.Execute(runner.Request{
 				Target:  target,
 				Command: command,
+				Env:     env,
 				Timeout: timeout,
 			})
 			if result.Stdout != "" {

@@ -46,6 +46,12 @@ func TestSaveWritesModelslabConfigOnly(t *testing.T) {
 		Token: "ml-current",
 		Model: "openai-gpt-5.4-pro",
 	}
+	cfg.HuggingFace = HuggingFaceConfig{
+		Token: "hf-current",
+	}
+	cfg.GitHub = GitHubConfig{
+		Token: "gh-current",
+	}
 	if err := manager.Save(cfg); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
@@ -58,7 +64,67 @@ func TestSaveWritesModelslabConfigOnly(t *testing.T) {
 	if !strings.Contains(text, `"modelslab"`) {
 		t.Fatalf("expected modelslab block in saved config: %s", text)
 	}
+	if !strings.Contains(text, `"huggingface"`) {
+		t.Fatalf("expected huggingface block in saved config: %s", text)
+	}
+	if !strings.Contains(text, `"github"`) {
+		t.Fatalf("expected github block in saved config: %s", text)
+	}
 	if strings.Contains(text, `"providers"`) {
 		t.Fatalf("did not expect legacy providers field in saved config: %s", text)
+	}
+}
+
+func TestSetAndClearHuggingFaceToken(t *testing.T) {
+	root := t.TempDir()
+	manager := &Manager{path: filepath.Join(root, "config.json")}
+
+	if err := manager.SetHuggingFaceToken("hf_test"); err != nil {
+		t.Fatalf("SetHuggingFaceToken() error = %v", err)
+	}
+	cfg, err := manager.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.HuggingFace.Token != "hf_test" {
+		t.Fatalf("expected Hugging Face token to persist, got %q", cfg.HuggingFace.Token)
+	}
+
+	if err := manager.ClearHuggingFace(); err != nil {
+		t.Fatalf("ClearHuggingFace() error = %v", err)
+	}
+	cleared, err := manager.Load()
+	if err != nil {
+		t.Fatalf("Load() after clear error = %v", err)
+	}
+	if cleared.HuggingFace.Token != "" {
+		t.Fatalf("expected Hugging Face token to be cleared, got %q", cleared.HuggingFace.Token)
+	}
+}
+
+func TestSetAndClearGitHubToken(t *testing.T) {
+	root := t.TempDir()
+	manager := &Manager{path: filepath.Join(root, "config.json")}
+
+	if err := manager.SetGitHubToken("gh_test"); err != nil {
+		t.Fatalf("SetGitHubToken() error = %v", err)
+	}
+	cfg, err := manager.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.GitHub.Token != "gh_test" {
+		t.Fatalf("expected GitHub token to persist, got %q", cfg.GitHub.Token)
+	}
+
+	if err := manager.ClearGitHub(); err != nil {
+		t.Fatalf("ClearGitHub() error = %v", err)
+	}
+	cleared, err := manager.Load()
+	if err != nil {
+		t.Fatalf("Load() after clear error = %v", err)
+	}
+	if cleared.GitHub.Token != "" {
+		t.Fatalf("expected GitHub token to be cleared, got %q", cleared.GitHub.Token)
 	}
 }

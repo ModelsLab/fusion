@@ -39,6 +39,10 @@ func newProfileRunCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			env, err := runtimeShellEnv(runtimeState)
+			if err != nil {
+				return err
+			}
 			if runName == "" {
 				runName = resolvedName + "-profile"
 			}
@@ -46,6 +50,7 @@ func newProfileRunCommand() *cobra.Command {
 			runResult, err := runner.Execute(runner.Request{
 				Target:  target,
 				Command: command,
+				Env:     env,
 				Timeout: timeout,
 			})
 			if err != nil && runResult.ExitCode == 0 {

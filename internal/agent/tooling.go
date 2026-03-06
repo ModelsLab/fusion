@@ -16,6 +16,8 @@ import (
 	"github.com/ModelsLab/fusion/internal/artifacts"
 	"github.com/ModelsLab/fusion/internal/config"
 	"github.com/ModelsLab/fusion/internal/cutedsl"
+	"github.com/ModelsLab/fusion/internal/githubauth"
+	"github.com/ModelsLab/fusion/internal/huggingface"
 	"github.com/ModelsLab/fusion/internal/kb"
 	"github.com/ModelsLab/fusion/internal/optimize"
 	"github.com/ModelsLab/fusion/internal/runner"
@@ -1407,6 +1409,9 @@ func executeTargetCommand(ctx context.Context, toolCtx ToolContext, targetName, 
 		Command: command,
 		Timeout: timeout,
 	}
+	if env := shellEnvFromConfig(toolCtx.Config); len(env) > 0 {
+		runReq.Env = env
+	}
 	if mode == targets.ModeLocal || (mode == targets.ModeSim && strings.TrimSpace(target.Host) == "") {
 		baseDir := toolCtx.CWD
 		if strings.TrimSpace(workdir) != "" {
@@ -1464,6 +1469,35 @@ func containsDangerousRecursiveRemove(command string) bool {
 		}
 	}
 	return false
+}
+
+func shellEnvFromConfig(manager *config.Manager) map[string]string {
+	if manager == nil {
+		return nil
+	}
+	cfg, err := manager.Load()
+	if err != nil {
+		return nil
+	}
+	token := strings.TrimSpace(cfg.HuggingFace.Token)
+	if token == "" {
+		token = huggingface.TokenFromEnv()
+	}
+	env := map[string]string{}
+	for key, value := range huggingface.ShellEnv(token) {
+		env[key] = value
+	}
+	githubToken := strings.TrimSpace(cfg.GitHub.Token)
+	if githubToken == "" {
+		githubToken = githubauth.TokenFromEnv()
+	}
+	for key, value := range githubauth.ShellEnv(githubToken) {
+		env[key] = value
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 func resolveTarget(toolCtx ToolContext, name string) (config.TargetConfig, string, error) {

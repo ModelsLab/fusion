@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -18,6 +20,7 @@ type Request struct {
 	Target  config.TargetConfig
 	Command string
 	WorkDir string
+	Env     map[string]string
 	Timeout time.Duration
 }
 
@@ -74,7 +77,7 @@ func Execute(req Request) (Result, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	command, err := buildCommand(ctx, req.Target, req.Command, req.WorkDir)
+	command, err := buildCommand(ctx, req.Target, req.Command, req.WorkDir, req.Env)
 	if err != nil {
 		return Result{}, err
 	}
@@ -155,24 +158,24 @@ func Copy(req CopyRequest) (CopyResult, error) {
 	}, nil
 }
 
-func buildCommand(ctx context.Context, target config.TargetConfig, command string, workDir string) (*exec.Cmd, error) {
+func buildCommand(ctx context.Context, target config.TargetConfig, command string, workDir string, env map[string]string) (*exec.Cmd, error) {
 	mode := targets.Normalize(target.Mode)
 	switch mode {
 	case targets.ModeLocal:
-		return localCommand(ctx, target, command, workDir), nil
+		return localCommand(ctx, target, command, workDir, env), nil
 	case targets.ModeSSH:
-		return sshCommand(ctx, target, command, workDir)
+		return sshCommand(ctx, target, command, workDir, env)
 	case targets.ModeSim:
 		if target.Host != "" {
-			return sshCommand(ctx, target, command, workDir)
+			return sshCommand(ctx, target, command, workDir, env)
 		}
-		return localCommand(ctx, target, command, workDir), nil
+		return localCommand(ctx, target, command, workDir, env), nil
 	default:
 		return nil, fmt.Errorf("unsupported target mode %q", target.Mode)
 	}
 }
 
-func localCommand(ctx context.Context, target config.TargetConfig, command string, workDir string) *exec.Cmd {
+func localCommand(ctx context.Context, target config.TargetConfig, command string, workDir string, env map[string]string) *exec.Cmd {
 	var cmd *exec.Cmd
 	shell := strings.TrimSpace(target.Shell)
 	if shell != "" {
@@ -185,10 +188,13 @@ func localCommand(ctx context.Context, target config.TargetConfig, command strin
 	if strings.TrimSpace(workDir) != "" {
 		cmd.Dir = strings.TrimSpace(workDir)
 	}
+	if len(env) > 0 {
+		cmd.Env = mergeEnv(os.Environ(), env)
+	}
 	return cmd
 }
 
-func sshCommand(ctx context.Context, target config.TargetConfig, command string, workDir string) (*exec.Cmd, error) {
+func sshCommand(ctx context.Context, target config.TargetConfig, command string, workDir string, env map[string]string) (*exec.Cmd, error) {
 	if strings.TrimSpace(target.Host) == "" {
 		return nil, fmt.Errorf("ssh target requires a host")
 	}
@@ -211,10 +217,17 @@ func sshCommand(ctx context.Context, target config.TargetConfig, command string,
 		args = append(args, "-i", target.IdentityFile)
 	}
 
+	envScript, err := shellEnvExports(env)
+	if err != nil {
+		return nil, err
+	}
 	remoteScript := `exec sh -lc "$1"`
+	if envScript != "" {
+		remoteScript = envScript + remoteScript
+	}
 	args = append(args, destination, "sh", "-lc")
 	if remoteDir != "" {
-		remoteScript = `mkdir -p "$1" && cd "$1" && exec sh -lc "$2"`
+		remoteScript = envScript + `mkdir -p "$1" && cd "$1" && exec sh -lc "$2"`
 		args = append(args, remoteScript, "fusion-remote", remoteDir, command)
 	} else {
 		args = append(args, remoteScript, "fusion-remote", command)
@@ -252,6 +265,67 @@ func extractExitCode(err error) int {
 // As allows runner to avoid importing errors in multiple helpers.
 func As(err error, target any) bool {
 	return errorsAs(err, target)
+}
+
+func mergeEnv(base []string, overrides map[string]string) []string {
+	if len(overrides) == 0 {
+		return base
+	}
+	merged := append([]string{}, base...)
+	indexByKey := map[string]int{}
+	for i, entry := range merged {
+		if key, _, ok := strings.Cut(entry, "="); ok {
+			indexByKey[key] = i
+		}
+	}
+	for key, value := range overrides {
+		entry := key + "=" + value
+		if index, ok := indexByKey[key]; ok {
+			merged[index] = entry
+			continue
+		}
+		merged = append(merged, entry)
+	}
+	return merged
+}
+
+func shellEnvExports(env map[string]string) (string, error) {
+	if len(env) == 0 {
+		return "", nil
+	}
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		if !validEnvKey(key) {
+			return "", fmt.Errorf("invalid environment variable name %q", key)
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+shellQuote(env[key]))
+	}
+	return "export " + strings.Join(parts, " ") + "; ", nil
+}
+
+func validEnvKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i, r := range key {
+		if i == 0 {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '_' {
+				continue
+			}
+			return false
+		}
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 const maxCommandOutputBytes = 4 << 20

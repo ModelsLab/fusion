@@ -75,7 +75,7 @@ func TestBuildCommandForSSHIncludesDestinationAndRemoteDir(t *testing.T) {
 		Port:         2222,
 		IdentityFile: "/tmp/id",
 		RemoteDir:    "/opt/fusion work",
-	}, "printf hi", "")
+	}, "printf hi", "", nil)
 	if err != nil {
 		t.Fatalf("buildCommand() error = %v", err)
 	}
@@ -96,20 +96,58 @@ func TestBuildCommandForSSHIncludesDestinationAndRemoteDir(t *testing.T) {
 	}
 }
 
+func TestBuildCommandForSSHIncludesEnvironmentExports(t *testing.T) {
+	command, err := buildCommand(context.Background(), config.TargetConfig{
+		Name: "lab-4090",
+		Mode: "ssh",
+		Host: "example.com",
+	}, "printf %s \"$HF_TOKEN\"", "", map[string]string{
+		"HF_TOKEN": "hf-secret",
+	})
+	if err != nil {
+		t.Fatalf("buildCommand() error = %v", err)
+	}
+
+	args := strings.Join(command.Args, " ")
+	if !strings.Contains(args, "export HF_TOKEN='hf-secret';") {
+		t.Fatalf("expected ssh args to export HF_TOKEN, got %q", args)
+	}
+}
+
 func TestLocalCommandUsesWindowsShellOnWindows(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("windows-specific shell behavior")
 	}
 
-	command := localCommand(context.Background(), config.TargetConfig{Name: "local", Mode: "local"}, "echo hi", "")
+	command := localCommand(context.Background(), config.TargetConfig{Name: "local", Mode: "local"}, "echo hi", "", nil)
 	if len(command.Args) < 2 || command.Args[1] != "/C" {
 		t.Fatalf("expected cmd /C on windows, got %v", command.Args)
 	}
 }
 
 func TestLocalCommandAppliesWorkingDirectory(t *testing.T) {
-	command := localCommand(context.Background(), config.TargetConfig{Name: "local", Mode: "local"}, "printf hi", t.TempDir())
+	command := localCommand(context.Background(), config.TargetConfig{Name: "local", Mode: "local"}, "printf hi", t.TempDir(), nil)
 	if command.Dir == "" {
 		t.Fatal("expected working directory to be set")
+	}
+}
+
+func TestExecuteLocalTargetAppliesEnvironmentOverrides(t *testing.T) {
+	result, err := Execute(Request{
+		Target: config.TargetConfig{
+			Name: "local",
+			Mode: "local",
+		},
+		Command: "printf %s \"$HF_TOKEN\"",
+		Env: map[string]string{
+			"HF_TOKEN": "hf-test-token",
+		},
+		Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.Stdout != "hf-test-token" {
+		t.Fatalf("expected env override in stdout, got %q", result.Stdout)
 	}
 }

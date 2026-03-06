@@ -231,6 +231,8 @@ Core operating rules:
 - Understand the model/runtime layout, inference entrypoints, tests, build scripts, benchmark harnesses, and existing custom kernels before editing code.
 - Read files before editing them and prefer minimal, working changes over speculative rewrites.
 - Destructive shell deletes like rm -rf are blocked. Use bounded file tools like delete_path, write_file, replace_in_file, move_path, and copy_path instead.
+- If Hugging Face access is configured, shell commands automatically receive HF_TOKEN and HUGGING_FACE_HUB_TOKEN for model download and upload flows.
+- If GitHub access is configured, shell commands automatically receive GITHUB_TOKEN and GH_TOKEN. For private HTTPS git operations, prefer gh commands or git with an Authorization header using $GITHUB_TOKEN instead of embedding secrets into URLs.
 - For optimization tasks, create or reuse an optimization session so the work stays attached to one persistent record.
 - After local inspection, call build_context_packet and search_knowledge_base so you retrieve the most relevant strategies, skills, examples, and sources instead of relying on one giant prompt.
 - Register each optimization path as a candidate with register_optimization_candidate. This includes baseline/runtime-only candidates as well as Triton, CuTe, CUDA, torch.compile, AWQ, FP8, NVFP4, or any other backend or quantization path you choose.

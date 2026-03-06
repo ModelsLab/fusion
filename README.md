@@ -110,6 +110,27 @@ fusion auth set \
   --model openai-gpt-5.4-pro
 ```
 
+Store Hugging Face and GitHub tokens for model and private-repo workflows:
+
+```bash
+fusion hf login --token "$HF_TOKEN"
+fusion github login --token "$GITHUB_TOKEN"
+```
+
+Validate them:
+
+```bash
+fusion hf whoami
+fusion github whoami
+```
+
+Fusion shell commands automatically expose:
+
+- `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`
+- `GITHUB_TOKEN`, `GH_TOKEN`
+
+That lets the agent download models from Hugging Face and work against private GitHub repos. For private HTTPS git operations, prefer `gh` commands or `git` with an Authorization header using `$GITHUB_TOKEN` instead of embedding secrets into URLs.
+
 Start the interactive agent shell:
 
 ```bash
