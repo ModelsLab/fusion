@@ -1,6 +1,7 @@
 package optimize
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ModelsLab/fusion/internal/kb"
@@ -177,5 +178,31 @@ func TestBlackwellPlanIncludesNVFP4Track(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected NVFP4 model track for Blackwell plan")
+	}
+}
+
+func TestAmperePlanWarnsAboutNativeFP8AndNVFP4(t *testing.T) {
+	store, err := kb.LoadDefault()
+	if err != nil {
+		t.Fatalf("LoadDefault() error = %v", err)
+	}
+
+	planner := NewPlanner(store)
+	plan, err := planner.Build(Request{
+		GPU:       "rtx3090",
+		Model:     "chatterbox",
+		Workload:  "decode",
+		Operators: []string{"attention"},
+	})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	warnings := strings.Join(plan.Warnings, "\n")
+	if !strings.Contains(warnings, "native FP8") {
+		t.Fatalf("expected FP8 warning for Ampere plan, got %q", warnings)
+	}
+	if !strings.Contains(warnings, "NVFP4") {
+		t.Fatalf("expected NVFP4 warning for Ampere plan, got %q", warnings)
 	}
 }

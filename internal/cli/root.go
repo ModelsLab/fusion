@@ -19,6 +19,7 @@ func NewRootCommand() *cobra.Command {
 		newAuthCommand(),
 		newChatCommand(),
 		newEnvCommand(),
+		newGenerateCommand(),
 		newGitHubCommand(),
 		newGPUCommand(),
 		newHuggingFaceCommand(),

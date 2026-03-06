@@ -21,11 +21,20 @@ func TestLowerIsBetter(t *testing.T) {
 	if !lowerIsBetter("rtf") {
 		t.Fatal("expected rtf to be lower-is-better")
 	}
+	if !lowerIsBetter("gen_s_mean") {
+		t.Fatal("expected gen_s_mean to be lower-is-better")
+	}
+	if !lowerIsBetter("rtf_mean") {
+		t.Fatal("expected rtf_mean to be lower-is-better")
+	}
 	if lowerIsBetter("tokens_per_sec") {
 		t.Fatal("expected tokens_per_sec to be higher-is-better")
 	}
 	if lowerIsBetter("x_real_time") {
 		t.Fatal("expected x_real_time to be higher-is-better")
+	}
+	if lowerIsBetter("x_real_time_mean") {
+		t.Fatal("expected x_real_time_mean to be higher-is-better")
 	}
 }
 

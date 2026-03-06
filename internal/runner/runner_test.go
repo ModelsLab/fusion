@@ -88,6 +88,9 @@ func TestBuildCommandForSSHIncludesDestinationAndRemoteDir(t *testing.T) {
 	if !strings.Contains(args, "ubuntu@example.com") {
 		t.Fatalf("expected ssh destination in args, got %q", args)
 	}
+	if !strings.Contains(args, "StrictHostKeyChecking=accept-new") {
+		t.Fatalf("expected accept-new host key policy, got %q", args)
+	}
 	if !strings.Contains(args, "mkdir -p '/opt/fusion work' && cd '/opt/fusion work' && exec sh -lc 'printf hi'") {
 		t.Fatalf("expected quoted remote dir bootstrap, got %q", args)
 	}

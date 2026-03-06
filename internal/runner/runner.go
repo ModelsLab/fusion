@@ -216,6 +216,7 @@ func sshCommand(ctx context.Context, target config.TargetConfig, command string,
 	if strings.TrimSpace(target.IdentityFile) != "" {
 		args = append(args, "-i", target.IdentityFile)
 	}
+	args = append(args, "-o", "StrictHostKeyChecking=accept-new")
 
 	envScript, err := shellEnvExports(env)
 	if err != nil {

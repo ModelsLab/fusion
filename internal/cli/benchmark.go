@@ -227,6 +227,14 @@ func metricPreferenceForKey(key string) metricPreference {
 	case "x_real_time", "tokens_per_sec", "throughput", "samples_per_sec":
 		return metricPreferenceHigherBetter
 	}
+	switch {
+	case strings.HasPrefix(key, "x_real_time"):
+		return metricPreferenceHigherBetter
+	case strings.HasPrefix(key, "rtf"):
+		return metricPreferenceLowerBetter
+	case strings.HasPrefix(key, "gen_s"), strings.HasPrefix(key, "load_s"), strings.HasPrefix(key, "total_s"):
+		return metricPreferenceLowerBetter
+	}
 
 	if strings.Contains(key, "latency") ||
 		strings.Contains(key, "time") ||

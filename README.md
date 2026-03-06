@@ -25,6 +25,7 @@ What works today:
 
 - `fusion` and `fusion chat` as a chat-first agent entry point
 - `fusion env detect|doctor`
+- `fusion generate keychain`
 - `fusion optimize plan` with a curated GPU and optimization knowledge base
 - `fusion kb list|search|show|context` backed by an embedded SQLite BM25 index
 - `fusion update kb` to rebuild a local Markdown-backed knowledge snapshot and SQLite index
@@ -193,6 +194,12 @@ fusion env doctor --backend all --fix-script
 ```
 
 Register a remote Ubuntu target over SSH:
+
+```bash
+fusion generate keychain --name gpulab
+```
+
+Paste the printed public key into your GPU provider, then register the target with the generated private key path:
 
 ```bash
 fusion target add \

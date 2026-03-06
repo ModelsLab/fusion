@@ -106,7 +106,8 @@ func (p *Planner) Build(input Request) (*Plan, error) {
 	plan.Priorities = derivePriorities(req, plan.GPU, plan.LikelyBottleneck)
 	plan.ModelPaths = p.recommendModelPaths(req, plan.GPU, plan.LikelyBottleneck)
 	plan.KernelBackends = p.recommendKernelBackends(req, plan.GPU, plan.LikelyBottleneck)
-	plan.Warnings = warnings
+	plan.Warnings = append(plan.Warnings, warnings...)
+	plan.Warnings = append(plan.Warnings, precisionSupportWarnings(plan.GPU)...)
 
 	recommendations := []Recommendation{}
 	supportingSourceIDs := []string{}
@@ -393,6 +394,9 @@ func scoreModelPath(spec modelPathSpec, req Request, gpu *kb.GPUProfile, bottlen
 		if gpu != nil && matchesBucket(gpu.Family, []string{"Hopper", "Blackwell"}) {
 			score += 28
 			reasons = append(reasons, fmt.Sprintf("%s is the best GPU family for mature FP8 paths", gpu.Family))
+		} else if gpu != nil {
+			score -= 24
+			reasons = append(reasons, fmt.Sprintf("%s does not provide a first-class native FP8 tensor-core serving path", gpu.Name))
 		}
 		if bottleneck == "compute" {
 			score += 14
@@ -410,6 +414,9 @@ func scoreModelPath(spec modelPathSpec, req Request, gpu *kb.GPUProfile, bottlen
 		if gpu != nil && matchesBucket(gpu.Family, []string{"Blackwell"}) {
 			score += 34
 			reasons = append(reasons, "Blackwell is the first real home for NVFP4-style serving experiments")
+		} else if gpu != nil {
+			score -= 32
+			reasons = append(reasons, fmt.Sprintf("NVFP4 is not a native path on %s", gpu.Name))
 		}
 		if bottleneck == "compute" || bottleneck == "memory" {
 			score += 10
@@ -442,6 +449,24 @@ func scoreModelPath(spec modelPathSpec, req Request, gpu *kb.GPUProfile, bottlen
 		reasons = append(reasons, spec.Summary)
 	}
 	return score, reasons
+}
+
+func precisionSupportWarnings(gpu *kb.GPUProfile) []string {
+	if gpu == nil {
+		return nil
+	}
+
+	family := canonicalGPUFamily(gpu.Family)
+	warnings := []string{}
+
+	if family != "hopper" && family != "blackwell" {
+		warnings = append(warnings, fmt.Sprintf("%s is not a Hopper or Blackwell GPU, so native FP8 serving should not be treated as a first-line optimization path here.", gpu.Name))
+	}
+	if family != "blackwell" {
+		warnings = append(warnings, fmt.Sprintf("%s is not a Blackwell GPU, so NVFP4 or block-scaled FP4 should be treated as unsupported for production optimization on this target.", gpu.Name))
+	}
+
+	return warnings
 }
 
 func scoreKernelBackend(spec kernelBackendSpec, req Request, gpu *kb.GPUProfile, bottleneck string) (int, []string) {
