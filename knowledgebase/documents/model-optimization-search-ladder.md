@@ -42,6 +42,7 @@ source_ids:
   - nvidia-cute-dsl
   - nvidia-blackwell-cutlass
   - awq-activation-aware-weight-quantization
+  - fal-ai-flashpack
 path: documents/model-optimization-search-ladder.md
 ---
 
@@ -52,13 +53,15 @@ Do not stop at the first positive delta. Build a candidate ladder, test every ap
 ## Required Order
 
 1. Establish a seeded correctness and performance baseline.
-2. Build an applicability matrix for the current GPU, model, runtime, and workload.
-3. Test packaged model-family, checkpoint, and runtime-flavor variants early.
-4. Test runtime-only low-hanging fruit next.
-5. Test precision, checkpoint, and quantization variants that are actually supported by the target GPU.
-6. Test compile and graph-capture paths if the environment supports them.
-7. Only then spend time on custom kernels and backend rewrites.
-8. Rank all passing candidates and promote the current best.
+2. Profile the target phase you are actually optimizing and keep load or warmup separate from steady-state generation.
+3. Analyze the profile and retrieve strategies based on the measured bottleneck instead of intuition.
+4. Build an applicability matrix for the current GPU, model, runtime, and workload.
+5. Test packaged model-family, checkpoint, and runtime-flavor variants early.
+6. Test runtime-only low-hanging fruit next.
+7. Test precision, checkpoint, and quantization variants that are actually supported by the target GPU.
+8. Test compile and graph-capture paths if the environment supports them.
+9. Only then spend time on custom kernels and backend rewrites.
+10. Rank all passing candidates and promote the current best.
 
 ## Model Family And Checkpoint Pass
 
@@ -73,6 +76,9 @@ Do not stop at the first positive delta. Build a candidate ladder, test every ap
 - choose the fastest valid attention implementation for the active runtime
 - stabilize allocator and cache behavior before deeper kernel work
 - verify that logging, progress bars, and optional hooks are not left on in production paths
+- if profiling shows heavy host-to-device movement, prioritize residency, offload policy, pinned-buffer reuse, and staging reduction before custom kernel work
+- treat one-time checkpoint load costs separately from steady-state generation so startup overhead does not mislead the search order
+- evaluate cold-start-only branches like `torch.load(..., mmap=True)` or FlashPack separately from steady-state throughput branches
 
 ## Precision And Quantization Pass
 

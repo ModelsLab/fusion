@@ -179,6 +179,8 @@ func DefaultSearchConfig() SearchConfig {
 }
 
 var nsightMetricPattern = regexp.MustCompile(`(?m)([A-Za-z][A-Za-z0-9_./:%-]+)\s*[:=]\s*(-?[0-9][0-9,]*\.?[0-9]*)`)
+var nsysReportPattern = regexp.MustCompile(`^\[\d+/\d+\] Executing '([^']+)' stats report`)
+var nsysTableSplitPattern = regexp.MustCompile(`\s{2,}`)
 
 func ParseNsightProfile(tool, stdout, stderr string) NsightProfile {
 	profile := NsightProfile{
@@ -189,6 +191,9 @@ func ParseNsightProfile(tool, stdout, stderr string) NsightProfile {
 		GeneratedAt: time.Now().UTC(),
 	}
 	text := strings.TrimSpace(stdout + "\n" + stderr)
+	if profile.Tool == "nsys" {
+		parseNsysStatsText(text, &profile)
+	}
 	for _, match := range nsightMetricPattern.FindAllStringSubmatch(text, -1) {
 		rawKey := strings.TrimSpace(match[1])
 		value, err := parseMetricNumber(match[2])
@@ -218,13 +223,32 @@ func AnalyzeRoofline(profile NsightProfile) BottleneckReport {
 	dram := firstMetric(metrics, "dram_pct_of_peak", "dram_bandwidth_pct")
 	occupancy := firstMetric(metrics, "occupancy_pct", "achieved_occupancy_pct")
 	launch := firstMetric(metrics, "launch_overhead_pct", "cuda_api_pct")
-	efficiency := maxFloat(sm, tensor, dram) / 100.0
+	h2d := firstMetric(metrics, "h2d_memcpy_time_pct")
+	d2d := firstMetric(metrics, "d2d_memcpy_time_pct")
+	d2h := firstMetric(metrics, "d2h_memcpy_time_pct")
+	memcpyAPI := firstMetric(metrics, "cuda_memcpy_api_pct")
+	sync := firstMetric(metrics, "cuda_sync_pct")
+	topKernel := firstMetric(metrics, "top_kernel_pct")
+	efficiency := maxFloat(sm, tensor, dram, topKernel) / 100.0
+	if efficiency == 0 && maxFloat(h2d, d2d, d2h, memcpyAPI, sync) > 0 {
+		efficiency = math.Max(0.05, 1.0-maxFloat(h2d, memcpyAPI)/100.0)
+	}
 
 	category := "mixed"
 	rootCauses := []string{}
 	confidence := 0.45
 
 	switch {
+	case memcpyAPI >= 35 && h2d >= 50:
+		category = "memory"
+		rootCauses = append(rootCauses,
+			"host-to-device staging dominates the traced transfer time",
+			"runtime is spending substantial time in cudaMemcpyAsync before kernels can do useful work",
+		)
+		if firstMetric(metrics, "cuda_host_alloc_pct") >= 10 {
+			rootCauses = append(rootCauses, "pinned host allocation and staging behavior is a material part of the traced runtime")
+		}
+		confidence = 0.9
 	case launch >= 18 && maxFloat(sm, tensor, dram) < 50:
 		category = "launch"
 		rootCauses = append(rootCauses,
@@ -232,6 +256,13 @@ func AnalyzeRoofline(profile NsightProfile) BottleneckReport {
 			"kernel fusion, CUDA Graphs, or batching should be considered before deeper kernel rewrites",
 		)
 		confidence = 0.82
+	case sync >= 20 && launch < 18:
+		category = "launch"
+		rootCauses = append(rootCauses,
+			"device or stream synchronization is consuming a large share of traced API time",
+			"the hot path may include avoidable CPU-GPU barriers or phase boundaries before deeper kernel work",
+		)
+		confidence = 0.78
 	case occupancy > 0 && occupancy < 35:
 		category = "occupancy"
 		rootCauses = append(rootCauses,
@@ -259,8 +290,14 @@ func AnalyzeRoofline(profile NsightProfile) BottleneckReport {
 			"collect more counters or compare across shapes before overfitting one optimization path",
 		)
 	}
+	if profile.Tool == "nsys" && firstMetric(metrics, "top_kernel_pct") == 0 {
+		rootCauses = append(rootCauses, "Nsight Systems reports transfer and timeline behavior but not full roofline counters; use Nsight Compute if you need kernel-level DRAM vs SM attribution")
+	}
 
 	summary := fmt.Sprintf("%s-bound kernel with %.0f%% estimated roofline efficiency", strings.Title(category), efficiency*100)
+	if profile.Tool == "nsys" && maxFloat(sm, tensor, dram) == 0 {
+		summary = fmt.Sprintf("%s-bound traced path with %.0f%% estimated efficiency", strings.Title(category), efficiency*100)
+	}
 	return BottleneckReport{
 		Version:         1,
 		Category:        category,
@@ -298,6 +335,10 @@ func PrescribeFromReport(report BottleneckReport, req Request, candidate Candida
 
 	switch report.Category {
 	case "memory":
+		if firstMetric(report.EvidenceMetrics, "h2d_memcpy_time_pct") >= 50 || firstMetric(report.EvidenceMetrics, "cuda_memcpy_api_pct") >= 35 {
+			addFix("Reduce host-to-device staging before deeper kernel work: keep model components resident, disable unnecessary offload, reuse pinned buffers, and cache reusable conditioning or embeddings.", []string{"offload-policy", "residency", "staging-buffers", "conditioning-cache"}, "lower host-device transfer time and expose the real steady-state kernel bottleneck", "low")
+			addFix("Separate load or warmup profiling from steady-state generation so one-time checkpoint movement does not hide the real hot path.", []string{"profile-phase", "warmup", "benchmark-protocol"}, "focus optimization effort on the objective phase instead of startup costs", "low")
+		}
 		addFix("Increase fusion around the hot operator and remove unnecessary intermediate reads or writes.", []string{"fusion-boundary", "epilogue", "layout"}, "reduce DRAM traffic and increase locality", "medium")
 		addFix("Try Triton or CuTe variants with vectorized loads, wider transactions, and tile shapes that improve L2 reuse.", []string{"block_m", "block_n", "block_k", "num_warps"}, "raise effective bandwidth and L2 hit rate", "medium")
 		addFix("Prefer weight-only or KV-cache quantization before deeper tensor-core rewrites if memory still dominates.", []string{"precision", "kv-cache", "awq"}, "reduce bytes moved per token", "low")
@@ -650,6 +691,7 @@ func EvaluateOuterLoopStatus(session *Session) OuterLoopStatus {
 	}
 	families := []OuterLoopFamilyStatus{
 		evaluateOuterLoopFamily(session, "baseline", true),
+		evaluateOuterLoopFamily(session, "profile", true),
 		evaluateOuterLoopFamily(session, "model-family", true),
 		evaluateOuterLoopFamily(session, "runtime", true),
 		evaluateOuterLoopFamily(session, "quantization", true),
@@ -741,6 +783,10 @@ func evaluateOuterLoopFamily(session *Session, family string, required bool) Out
 		if !candidateMatchesOuterLoopFamily(candidate, family) {
 			continue
 		}
+		if family == "profile" {
+			candidateIDs = append(candidateIDs, candidate.ID)
+			continue
+		}
 		if candidateStagePassed(candidate, "benchmark") || candidateStagePassed(candidate, "model-benchmark") || candidateStagePassed(candidate, "verify") {
 			candidateIDs = append(candidateIDs, candidate.ID)
 		}
@@ -768,6 +814,9 @@ func candidateMatchesOuterLoopFamily(candidate Candidate, family string) bool {
 	switch family {
 	case "baseline":
 		return strings.Contains(joined, "baseline")
+	case "profile":
+		_, ok := candidate.Stages[canonicalLoopValue("profile")]
+		return ok
 	case "model-family":
 		return stringContainsAny(joined, "turbo", "distilled", "checkpoint", "model-family", "packaged", "variant")
 	case "runtime":
@@ -826,6 +875,183 @@ func extractKernelName(text string) string {
 		}
 	}
 	return ""
+}
+
+func parseNsysStatsText(text string, profile *NsightProfile) {
+	if profile == nil {
+		return
+	}
+	sections := extractNsysSections(text)
+	if len(sections) == 0 {
+		return
+	}
+	parseNsysCUDAAPISum(sections["cuda_api_sum"], profile)
+	parseNsysGPUMemTimeSum(sections["cuda_gpu_mem_time_sum"], profile)
+	parseNsysGPUMemSizeSum(sections["cuda_gpu_mem_size_sum"], profile)
+	parseNsysGPUKernelSum(sections["cuda_gpu_kern_sum"], profile)
+}
+
+func extractNsysSections(text string) map[string]string {
+	sections := map[string][]string{}
+	current := ""
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if match := nsysReportPattern.FindStringSubmatch(trimmed); len(match) == 2 {
+			current = strings.TrimSpace(match[1])
+			continue
+		}
+		if strings.HasPrefix(trimmed, "Generated:") {
+			current = ""
+			continue
+		}
+		if current == "" {
+			continue
+		}
+		sections[current] = append(sections[current], line)
+	}
+	out := make(map[string]string, len(sections))
+	for key, lines := range sections {
+		out[key] = strings.Join(lines, "\n")
+	}
+	return out
+}
+
+func parseNsysCUDAAPISum(section string, profile *NsightProfile) {
+	for _, columns := range parseNsysTableRows(section) {
+		if len(columns) < 2 {
+			continue
+		}
+		name := columns[len(columns)-1]
+		switch strings.TrimSpace(name) {
+		case "cudaMemcpyAsync":
+			setProfileMetric(profile, "cuda_memcpy_api_pct", parseMetricPercent(columns[0]))
+			setProfileMetric(profile, "cuda_memcpy_api_time_ms", nsToMS(parseMetricNumberFallback(columns[1])))
+		case "cudaHostAlloc":
+			setProfileMetric(profile, "cuda_host_alloc_pct", parseMetricPercent(columns[0]))
+		case "cudaLaunchKernel", "cuLaunchKernel", "cudaLaunchKernelExC_v11060":
+			addProfileMetric(profile, "cuda_launch_pct", parseMetricPercent(columns[0]))
+		case "cudaDeviceSynchronize", "cudaEventSynchronize", "cudaStreamSynchronize":
+			addProfileMetric(profile, "cuda_sync_pct", parseMetricPercent(columns[0]))
+		}
+	}
+}
+
+func parseNsysGPUMemTimeSum(section string, profile *NsightProfile) {
+	for _, columns := range parseNsysTableRows(section) {
+		if len(columns) < 2 {
+			continue
+		}
+		operation := columns[len(columns)-1]
+		switch strings.TrimSpace(operation) {
+		case "[CUDA memcpy Host-to-Device]":
+			setProfileMetric(profile, "h2d_memcpy_time_pct", parseMetricPercent(columns[0]))
+			setProfileMetric(profile, "h2d_memcpy_time_ms", nsToMS(parseMetricNumberFallback(columns[1])))
+		case "[CUDA memcpy Device-to-Device]":
+			setProfileMetric(profile, "d2d_memcpy_time_pct", parseMetricPercent(columns[0]))
+			setProfileMetric(profile, "d2d_memcpy_time_ms", nsToMS(parseMetricNumberFallback(columns[1])))
+		case "[CUDA memcpy Device-to-Host]":
+			setProfileMetric(profile, "d2h_memcpy_time_pct", parseMetricPercent(columns[0]))
+			setProfileMetric(profile, "d2h_memcpy_time_ms", nsToMS(parseMetricNumberFallback(columns[1])))
+		}
+	}
+}
+
+func parseNsysGPUMemSizeSum(section string, profile *NsightProfile) {
+	for _, columns := range parseNsysTableRows(section) {
+		if len(columns) < 2 {
+			continue
+		}
+		operation := columns[len(columns)-1]
+		switch strings.TrimSpace(operation) {
+		case "[CUDA memcpy Host-to-Device]":
+			setProfileMetric(profile, "h2d_total_mb", parseMetricNumberFallback(columns[0]))
+		case "[CUDA memcpy Device-to-Device]":
+			setProfileMetric(profile, "d2d_total_mb", parseMetricNumberFallback(columns[0]))
+		case "[CUDA memcpy Device-to-Host]":
+			setProfileMetric(profile, "d2h_total_mb", parseMetricNumberFallback(columns[0]))
+		}
+	}
+}
+
+func parseNsysGPUKernelSum(section string, profile *NsightProfile) {
+	rows := parseNsysTableRows(section)
+	if len(rows) == 0 {
+		return
+	}
+	top := rows[0]
+	if len(top) < 2 {
+		return
+	}
+	setProfileMetric(profile, "top_kernel_pct", parseMetricPercent(top[0]))
+	setProfileMetric(profile, "top_kernel_time_ms", nsToMS(parseMetricNumberFallback(top[1])))
+	if strings.TrimSpace(profile.KernelName) == "" {
+		profile.KernelName = strings.TrimSpace(top[len(top)-1])
+	}
+}
+
+func parseNsysTableRows(section string) [][]string {
+	rows := [][]string{}
+	for _, line := range strings.Split(section, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "Time (%)") || strings.HasPrefix(trimmed, "Total (MB)") || strings.HasPrefix(trimmed, "--------") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") && strings.Contains(trimmed, "Executing") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "Generated:") {
+			break
+		}
+		columns := nsysTableSplitPattern.Split(trimmed, -1)
+		if len(columns) < 2 {
+			continue
+		}
+		rows = append(rows, columns)
+	}
+	return rows
+}
+
+func setProfileMetric(profile *NsightProfile, key string, value float64) {
+	if profile == nil || strings.TrimSpace(key) == "" || value == 0 {
+		return
+	}
+	profile.RawMetrics[key] = roundFloat(value, 6)
+	profile.Metrics[key] = roundFloat(value, 6)
+}
+
+func addProfileMetric(profile *NsightProfile, key string, value float64) {
+	if profile == nil || strings.TrimSpace(key) == "" || value == 0 {
+		return
+	}
+	total := profile.Metrics[key] + value
+	profile.RawMetrics[key] = roundFloat(total, 6)
+	profile.Metrics[key] = roundFloat(total, 6)
+}
+
+func parseMetricPercent(value string) float64 {
+	parsed, err := parseMetricNumber(value)
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+func parseMetricNumberFallback(value string) float64 {
+	parsed, err := parseMetricNumber(value)
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+func nsToMS(value float64) float64 {
+	if value == 0 {
+		return 0
+	}
+	return value / 1_000_000.0
 }
 
 func parseMetricNumber(value string) (float64, error) {

@@ -59,7 +59,7 @@ func recordLoopDecisionTool() Tool {
 				map[string]any{
 					"session":   stringSchema("optimization session id"),
 					"phase":     stringSchema("loop phase, for example outer or inner"),
-					"family":    stringSchema("decision family like baseline, model-family, runtime, quantization, compile, or attention-backend"),
+					"family":    stringSchema("decision family like baseline, profile, model-family, runtime, quantization, compile, or attention-backend"),
 					"status":    stringSchema("decision status like tested, blocked, skipped, regressed, or winner"),
 					"candidate": stringSchema("optional candidate id"),
 					"reason":    stringSchema("short explanation for the decision"),
