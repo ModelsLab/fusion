@@ -239,6 +239,7 @@ Core operating rules:
 - After local inspection, call build_context_packet and search_knowledge_base so you retrieve the most relevant strategies, skills, examples, and sources instead of relying on one giant prompt.
 - Use detect_runtime_environment when the codebase could be transformers, diffusers, vllm, sglang, or another Python runtime.
 - Register each optimization path as a candidate with register_optimization_candidate. This includes baseline/runtime-only candidates as well as packaged turbo or distilled model variants, Triton, CuTe, CUDA, torch.compile, AWQ, FP8, synthesized FP8 conversions, NVFP4, or any other backend or quantization path you choose.
+- When the codebase already has a working path, create a conservative verified seed before aggressive rewrites. Prefer a correctness-preserving fast path first, then optimize bounded hot regions.
 - Do not stop at the first small win. Exhaust the applicable low-hanging search ladder first: baseline, packaged model-family or checkpoint variants, runtime flags and attention implementation, dtype or quant or checkpoint variants, including synthesized FP8 conversion when no packaged FP8 artifact exists, torch.compile or CUDA graphs if supported, then custom kernels.
 - Skip unsupported branches explicitly with a reason. Example: native FP8 is Hopper or Blackwell-first, synthesized FP8 still requires runtime and calibration support, and NVFP4 is Blackwell-only.
 - Do not assume hardcoded backend helpers exist. Choose the backend yourself and use generic file tools plus run_command to write, edit, build, verify, and benchmark code.
@@ -246,6 +247,9 @@ Core operating rules:
 - Use run_benchmark and run_profile with session and candidate when you want benchmark/profile stages attached to the candidate history.
 - For text, image, video, and audio workloads, create a task-aware harness with create_harness_manifest and evaluate it with assess_harness instead of forcing every model into one benchmark shape.
 - Use infer_hotspots when kernel names need to be mapped back to stages like attention, transformer, unet, vae, scheduler, or upscaler.
+- Run inner-loop search in phases: explore early with multiple distinct search lanes or architectural families, then exploit later around the strongest survivors. Avoid spending the whole budget on one lineage too early.
+- Use rank_search_candidates with metadata like backend, search_lane, signature, and hypothesis so Fusion can preserve diverse survivors instead of collapsing to near-duplicate candidates.
+- Treat failed compile, verify, and runtime candidates as reusable negative examples. Record them with record_reflexion and session memory so later rounds avoid repeating the same class of mistake.
 - If compile, correctness, inference, or performance issues happen, inspect the outputs, patch the code, and retry. Do not stop at the first fixable error.
 - Verify correctness before claiming success, and use benchmark/profile evidence before claiming a performance win. For FP8 or other converted quantization paths, persist calibration details, fallback modules, and quality drift evidence with the candidate.
 - Write session memory with write_session_memory after wins, failures, blockers, and environment changes so later turns can resume from markdown evidence.

@@ -66,6 +66,7 @@ func TestSearchManagerSelectBeamAndEarlyCancel(t *testing.T) {
 			BeamWidth:              2,
 			EarlyCancelScoreMargin: 0.2,
 			EarlyCancelMinRound:    2,
+			NoveltyWeight:          0.15,
 		},
 	}
 	selection := manager.Select([]SearchCandidateState{
@@ -118,6 +119,84 @@ func TestSearchManagerSelectBeamAndEarlyCancel(t *testing.T) {
 	}
 	if !selection.EarlyCancel {
 		t.Fatalf("expected early cancel to trigger, got %+v", selection)
+	}
+}
+
+func TestSearchManagerPreservesDiverseLanes(t *testing.T) {
+	manager := SearchManager{
+		Config: SearchConfig{
+			Mode:                   SearchModeBeam,
+			BeamWidth:              2,
+			EarlyCancelScoreMargin: 10,
+			EarlyCancelMinRound:    99,
+			NoveltyWeight:          1.0,
+		},
+	}
+	selection := manager.Select([]SearchCandidateState{
+		{
+			CandidateID: "triton-fast-a",
+			Round:       2,
+			Verified:    true,
+			BuildPassed: true,
+			Efficiency:  0.82,
+			Metadata: map[string]string{
+				"backend":     "triton",
+				"search_lane": "lane-triton",
+				"signature":   "tile128-stage3",
+			},
+			Assessment: BenchmarkAssessment{
+				Stable: true,
+				MetricStats: map[string]BenchmarkMetricSummary{
+					"tokens_per_sec": {Mean: 120, Samples: 3},
+				},
+			},
+		},
+		{
+			CandidateID: "triton-fast-b",
+			Round:       2,
+			Verified:    true,
+			BuildPassed: true,
+			Efficiency:  0.81,
+			Metadata: map[string]string{
+				"backend":     "triton",
+				"search_lane": "lane-triton",
+				"signature":   "tile128-stage4",
+			},
+			Assessment: BenchmarkAssessment{
+				Stable: true,
+				MetricStats: map[string]BenchmarkMetricSummary{
+					"tokens_per_sec": {Mean: 119, Samples: 3},
+				},
+			},
+		},
+		{
+			CandidateID: "cute-alt",
+			Round:       2,
+			Verified:    true,
+			BuildPassed: true,
+			Efficiency:  0.79,
+			Metadata: map[string]string{
+				"backend":     "cute",
+				"search_lane": "lane-cute",
+				"signature":   "warp-specialized",
+			},
+			Assessment: BenchmarkAssessment{
+				Stable: true,
+				MetricStats: map[string]BenchmarkMetricSummary{
+					"tokens_per_sec": {Mean: 119, Samples: 3},
+				},
+			},
+		},
+	})
+
+	if len(selection.Survivors) != 2 {
+		t.Fatalf("expected 2 survivors, got %+v", selection.Survivors)
+	}
+	if selection.Survivors[0].CandidateID != "triton-fast-a" {
+		t.Fatalf("expected top survivor to remain best-scoring candidate, got %+v", selection.Survivors)
+	}
+	if selection.Survivors[1].CandidateID != "cute-alt" {
+		t.Fatalf("expected second survivor to preserve lane diversity, got %+v", selection.Survivors)
 	}
 }
 

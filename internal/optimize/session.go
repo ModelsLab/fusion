@@ -83,6 +83,7 @@ type InnerLoopState struct {
 	Status          string    `json:"status,omitempty"`
 	SearchMode      string    `json:"search_mode,omitempty"`
 	BeamWidth       int       `json:"beam_width,omitempty"`
+	NoveltyWeight   float64   `json:"novelty_weight,omitempty"`
 	CurrentRound    int       `json:"current_round,omitempty"`
 	BestCandidateID string    `json:"best_candidate_id,omitempty"`
 	StartedAt       time.Time `json:"started_at,omitempty"`
@@ -978,6 +979,9 @@ func mergeInnerLoop(existing, incoming InnerLoopState) InnerLoopState {
 	merged.Status = valueOrFallback(merged.Status, existing.Status)
 	merged.SearchMode = valueOrFallback(merged.SearchMode, existing.SearchMode)
 	merged.BeamWidth = nonZeroInt(merged.BeamWidth, existing.BeamWidth)
+	if merged.NoveltyWeight == 0 {
+		merged.NoveltyWeight = existing.NoveltyWeight
+	}
 	merged.CurrentRound = nonZeroInt(merged.CurrentRound, existing.CurrentRound)
 	merged.BestCandidateID = valueOrFallback(merged.BestCandidateID, existing.BestCandidateID)
 	merged.StartedAt = chooseCreatedAt(existing.StartedAt, merged.StartedAt)

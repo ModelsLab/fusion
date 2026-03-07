@@ -43,12 +43,12 @@ func showOuterLoopStatusTool() Tool {
 
 func recordLoopDecisionTool() Tool {
 	type input struct {
-		Session    string `json:"session"`
-		Phase      string `json:"phase"`
-		Family     string `json:"family"`
-		Status     string `json:"status"`
-		Candidate  string `json:"candidate"`
-		Reason     string `json:"reason"`
+		Session   string `json:"session"`
+		Phase     string `json:"phase"`
+		Family    string `json:"family"`
+		Status    string `json:"status"`
+		Candidate string `json:"candidate"`
+		Reason    string `json:"reason"`
 	}
 
 	return Tool{
@@ -97,13 +97,13 @@ func recordLoopDecisionTool() Tool {
 
 func analyzeProfileTool(toolCtx ToolContext) Tool {
 	type input struct {
-		Artifact string `json:"artifact"`
-		Tool     string `json:"tool"`
-		Stdout   string `json:"stdout"`
-		Stderr   string `json:"stderr"`
-		Session  string `json:"session"`
+		Artifact  string `json:"artifact"`
+		Tool      string `json:"tool"`
+		Stdout    string `json:"stdout"`
+		Stderr    string `json:"stderr"`
+		Session   string `json:"session"`
 		Candidate string `json:"candidate"`
-		Round    int    `json:"round"`
+		Round     int    `json:"round"`
 	}
 
 	return Tool{
@@ -160,10 +160,10 @@ func analyzeProfileTool(toolCtx ToolContext) Tool {
 			})
 
 			payload := map[string]any{
-				"artifact":      strings.TrimSpace(req.Artifact),
-				"profile":       profile,
-				"diagnosis":     report,
-				"prescription":  prescription,
+				"artifact":     strings.TrimSpace(req.Artifact),
+				"profile":      profile,
+				"diagnosis":    report,
+				"prescription": prescription,
 			}
 			if strings.TrimSpace(req.Session) != "" && strings.TrimSpace(req.Candidate) != "" && req.Round > 0 {
 				session, _, err := loadOptimizationSession(req.Session)
@@ -285,13 +285,15 @@ func rankSearchCandidatesTool() Tool {
 		Efficiency  float64            `json:"efficiency"`
 		Metrics     map[string]float64 `json:"metrics"`
 		Assessment  assessment         `json:"assessment"`
+		Metadata    map[string]string  `json:"metadata"`
 	}
 	type input struct {
-		Session     string `json:"session"`
-		PromoteBest bool   `json:"promote_best"`
-		Mode        string `json:"mode"`
-		BeamWidth   int    `json:"beam_width"`
-		States      []state `json:"states"`
+		Session       string  `json:"session"`
+		PromoteBest   bool    `json:"promote_best"`
+		Mode          string  `json:"mode"`
+		BeamWidth     int     `json:"beam_width"`
+		NoveltyWeight float64 `json:"novelty_weight"`
+		States        []state `json:"states"`
 	}
 
 	return Tool{
@@ -300,10 +302,11 @@ func rankSearchCandidatesTool() Tool {
 			Description: "Rank inner-loop search branches with Fusion's search manager and optionally promote the top candidate as the current best.",
 			InputSchema: objectSchema(
 				map[string]any{
-					"session":      stringSchema("optional optimization session id"),
-					"promote_best": boolSchema("update the session winner with the top-ranked candidate"),
-					"mode":         stringSchema("search mode like greedy, beam, or bandit"),
-					"beam_width":   intSchema("beam width when using beam or bandit search"),
+					"session":        stringSchema("optional optimization session id"),
+					"promote_best":   boolSchema("update the session winner with the top-ranked candidate"),
+					"mode":           stringSchema("search mode like greedy, beam, or bandit"),
+					"beam_width":     intSchema("beam width when using beam or bandit search"),
+					"novelty_weight": numberSchema("optional novelty bonus used to preserve diverse search lanes among near-tied candidates"),
 					"states": map[string]any{
 						"type": "array",
 						"items": map[string]any{
@@ -315,6 +318,7 @@ func rankSearchCandidatesTool() Tool {
 								"build_passed": boolSchema("whether build passed"),
 								"efficiency":   numberSchema("roofline efficiency between 0 and 1"),
 								"metrics":      map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "number"}},
+								"metadata":     map[string]any{"type": "object", "additionalProperties": stringSchema("metadata value")},
 								"assessment": map[string]any{
 									"type": "object",
 									"properties": map[string]any{
@@ -325,10 +329,10 @@ func rankSearchCandidatesTool() Tool {
 											"additionalProperties": map[string]any{
 												"type": "object",
 												"properties": map[string]any{
-													"mean":             numberSchema("mean value"),
-													"stddev":           numberSchema("stddev"),
-													"relative_stddev":  numberSchema("relative stddev"),
-													"samples":          intSchema("sample count"),
+													"mean":            numberSchema("mean value"),
+													"stddev":          numberSchema("stddev"),
+													"relative_stddev": numberSchema("relative stddev"),
+													"samples":         intSchema("sample count"),
 												},
 											},
 										},
@@ -348,8 +352,9 @@ func rankSearchCandidatesTool() Tool {
 			}
 			manager := optimize.SearchManager{
 				Config: optimize.SearchConfig{
-					Mode:      optimize.SearchMode(strings.TrimSpace(strings.ToLower(req.Mode))),
-					BeamWidth: req.BeamWidth,
+					Mode:          optimize.SearchMode(strings.TrimSpace(strings.ToLower(req.Mode))),
+					BeamWidth:     req.BeamWidth,
+					NoveltyWeight: req.NoveltyWeight,
 				},
 			}
 			states := make([]optimize.SearchCandidateState, 0, len(req.States))
@@ -370,6 +375,7 @@ func rankSearchCandidatesTool() Tool {
 					BuildPassed: state.BuildPassed,
 					Efficiency:  state.Efficiency,
 					Metrics:     state.Metrics,
+					Metadata:    state.Metadata,
 					Assessment: optimize.BenchmarkAssessment{
 						Stable:        state.Assessment.Stable,
 						PrimaryMetric: state.Assessment.PrimaryMetric,
@@ -390,6 +396,7 @@ func rankSearchCandidatesTool() Tool {
 				session.InnerLoop.Status = "active"
 				session.InnerLoop.SearchMode = string(selection.Config.Mode)
 				session.InnerLoop.BeamWidth = selection.Config.BeamWidth
+				session.InnerLoop.NoveltyWeight = selection.Config.NoveltyWeight
 				session.InnerLoop.CurrentRound = selection.Ranked[0].Round
 				session.InnerLoop.BestCandidateID = selection.Ranked[0].CandidateID
 				session.InnerLoop.UpdatedAt = time.Now().UTC()

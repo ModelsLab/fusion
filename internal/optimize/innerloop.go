@@ -14,13 +14,13 @@ import (
 )
 
 type NsightProfile struct {
-	Version    int                `json:"version"`
-	Tool       string             `json:"tool"`
-	KernelName string             `json:"kernel_name,omitempty"`
-	Metrics    map[string]float64 `json:"metrics,omitempty"`
-	RawMetrics map[string]float64 `json:"raw_metrics,omitempty"`
-	Notes      []string           `json:"notes,omitempty"`
-	GeneratedAt time.Time         `json:"generated_at"`
+	Version     int                `json:"version"`
+	Tool        string             `json:"tool"`
+	KernelName  string             `json:"kernel_name,omitempty"`
+	Metrics     map[string]float64 `json:"metrics,omitempty"`
+	RawMetrics  map[string]float64 `json:"raw_metrics,omitempty"`
+	Notes       []string           `json:"notes,omitempty"`
+	GeneratedAt time.Time          `json:"generated_at"`
 }
 
 type BottleneckReport struct {
@@ -73,7 +73,7 @@ type BenchmarkProtocol struct {
 }
 
 type BenchmarkRunSample struct {
-	Name      string             `json:"name,omitempty"`
+	Name       string             `json:"name,omitempty"`
 	Metrics    map[string]float64 `json:"metrics,omitempty"`
 	DurationMS int64              `json:"duration_ms,omitempty"`
 	ExitCode   int                `json:"exit_code,omitempty"`
@@ -81,18 +81,18 @@ type BenchmarkRunSample struct {
 }
 
 type BenchmarkMetricSummary struct {
-	Mean          float64 `json:"mean"`
-	StdDev        float64 `json:"stddev"`
+	Mean           float64 `json:"mean"`
+	StdDev         float64 `json:"stddev"`
 	RelativeStdDev float64 `json:"relative_stddev"`
-	Samples       int     `json:"samples"`
+	Samples        int     `json:"samples"`
 }
 
 type BenchmarkAssessment struct {
-	Protocol      BenchmarkProtocol                  `json:"protocol"`
-	Stable        bool                               `json:"stable"`
-	MetricStats   map[string]BenchmarkMetricSummary  `json:"metric_stats,omitempty"`
-	PrimaryMetric string                             `json:"primary_metric,omitempty"`
-	Notes         []string                           `json:"notes,omitempty"`
+	Protocol      BenchmarkProtocol                 `json:"protocol"`
+	Stable        bool                              `json:"stable"`
+	MetricStats   map[string]BenchmarkMetricSummary `json:"metric_stats,omitempty"`
+	PrimaryMetric string                            `json:"primary_metric,omitempty"`
+	Notes         []string                          `json:"notes,omitempty"`
 }
 
 type SearchMode string
@@ -104,22 +104,23 @@ const (
 )
 
 type SearchConfig struct {
-	Mode                  SearchMode `json:"mode"`
-	BeamWidth             int        `json:"beam_width"`
-	EarlyCancelScoreMargin float64   `json:"early_cancel_score_margin"`
-	EarlyCancelMinRound   int        `json:"early_cancel_min_round"`
+	Mode                   SearchMode `json:"mode"`
+	BeamWidth              int        `json:"beam_width"`
+	EarlyCancelScoreMargin float64    `json:"early_cancel_score_margin"`
+	EarlyCancelMinRound    int        `json:"early_cancel_min_round"`
+	NoveltyWeight          float64    `json:"novelty_weight,omitempty"`
 }
 
 type SearchCandidateState struct {
-	CandidateID string                        `json:"candidate_id"`
-	Round       int                           `json:"round"`
-	Verified    bool                          `json:"verified"`
-	BuildPassed bool                          `json:"build_passed"`
-	Assessment  BenchmarkAssessment           `json:"assessment"`
-	Efficiency  float64                       `json:"efficiency"`
-	Metrics     map[string]float64            `json:"metrics,omitempty"`
-	Diagnosis   *BottleneckReport             `json:"diagnosis,omitempty"`
-	Metadata    map[string]string             `json:"metadata,omitempty"`
+	CandidateID string              `json:"candidate_id"`
+	Round       int                 `json:"round"`
+	Verified    bool                `json:"verified"`
+	BuildPassed bool                `json:"build_passed"`
+	Assessment  BenchmarkAssessment `json:"assessment"`
+	Efficiency  float64             `json:"efficiency"`
+	Metrics     map[string]float64  `json:"metrics,omitempty"`
+	Diagnosis   *BottleneckReport   `json:"diagnosis,omitempty"`
+	Metadata    map[string]string   `json:"metadata,omitempty"`
 }
 
 type CandidateScore struct {
@@ -173,6 +174,7 @@ func DefaultSearchConfig() SearchConfig {
 		BeamWidth:              3,
 		EarlyCancelScoreMargin: 0.2,
 		EarlyCancelMinRound:    2,
+		NoveltyWeight:          0.15,
 	}
 }
 
@@ -414,6 +416,9 @@ func (m SearchManager) Select(states []SearchCandidateState) SearchSelection {
 	if config.BeamWidth <= 0 {
 		config.BeamWidth = 1
 	}
+	if config.NoveltyWeight < 0 {
+		config.NoveltyWeight = 0
+	}
 
 	metricRanges := map[string][2]float64{}
 	for _, state := range states {
@@ -484,7 +489,7 @@ func (m SearchManager) Select(states []SearchCandidateState) SearchSelection {
 	default:
 		survivorCount = minInt(1, len(ranked))
 	}
-	survivors := append([]CandidateScore{}, ranked[:survivorCount]...)
+	survivors := selectDiverseSurvivors(ranked, states, survivorCount, config)
 	selection := SearchSelection{
 		Config:    config,
 		Ranked:    ranked,
@@ -499,6 +504,144 @@ func (m SearchManager) Select(states []SearchCandidateState) SearchSelection {
 		selection.EarlyCancelReason = fmt.Sprintf("single verified search branch %s remains after round %d", ranked[0].CandidateID, ranked[0].Round)
 	}
 	return selection
+}
+
+func selectDiverseSurvivors(ranked []CandidateScore, states []SearchCandidateState, survivorCount int, config SearchConfig) []CandidateScore {
+	if survivorCount <= 0 || len(ranked) == 0 {
+		return nil
+	}
+	if survivorCount >= len(ranked) {
+		return append([]CandidateScore{}, ranked...)
+	}
+	if config.Mode == SearchModeGreedy || config.NoveltyWeight <= 0 {
+		return append([]CandidateScore{}, ranked[:survivorCount]...)
+	}
+
+	stateByID := make(map[string]SearchCandidateState, len(states))
+	for _, state := range states {
+		stateByID[state.CandidateID] = state
+	}
+
+	survivors := make([]CandidateScore, 0, survivorCount)
+	survivors = append(survivors, ranked[0])
+	selected := map[string]bool{ranked[0].CandidateID: true}
+
+	for len(survivors) < survivorCount {
+		bestIdx := -1
+		bestScore := math.Inf(-1)
+		for idx, candidate := range ranked {
+			if selected[candidate.CandidateID] {
+				continue
+			}
+			novelty := 1.0
+			if len(survivors) > 0 {
+				maxSimilarity := 0.0
+				state := stateByID[candidate.CandidateID]
+				for _, selectedCandidate := range survivors {
+					similarity := candidateSimilarity(state, stateByID[selectedCandidate.CandidateID])
+					if similarity > maxSimilarity {
+						maxSimilarity = similarity
+					}
+				}
+				novelty = 1.0 - maxSimilarity
+			}
+			mmrScore := candidate.Score + config.NoveltyWeight*novelty
+			if mmrScore > bestScore || (mmrScore == bestScore && (bestIdx == -1 || candidate.CandidateID < ranked[bestIdx].CandidateID)) {
+				bestIdx = idx
+				bestScore = mmrScore
+			}
+		}
+		if bestIdx == -1 {
+			break
+		}
+		survivors = append(survivors, ranked[bestIdx])
+		selected[ranked[bestIdx].CandidateID] = true
+	}
+	return survivors
+}
+
+func candidateSimilarity(a, b SearchCandidateState) float64 {
+	if strings.TrimSpace(a.CandidateID) == "" || strings.TrimSpace(b.CandidateID) == "" {
+		return 0
+	}
+	signatureA := strings.TrimSpace(a.Metadata["signature"])
+	signatureB := strings.TrimSpace(b.Metadata["signature"])
+	if signatureA != "" && signatureA == signatureB {
+		return 1
+	}
+
+	similarity := tokenSetSimilarity(candidateSearchTokens(a), candidateSearchTokens(b))
+
+	laneA := strings.TrimSpace(a.Metadata["search_lane"])
+	laneB := strings.TrimSpace(b.Metadata["search_lane"])
+	if laneA != "" && laneA == laneB {
+		similarity = math.Max(similarity, 0.85)
+	}
+
+	backendA := strings.TrimSpace(a.Metadata["backend"])
+	backendB := strings.TrimSpace(b.Metadata["backend"])
+	if backendA != "" && backendA == backendB {
+		similarity = math.Max(similarity, 0.55)
+	}
+
+	return similarity
+}
+
+func candidateSearchTokens(state SearchCandidateState) map[string]struct{} {
+	raw := []string{
+		state.CandidateID,
+		state.Metadata["backend"],
+		state.Metadata["search_lane"],
+		state.Metadata["signature"],
+		state.Metadata["family"],
+		state.Metadata["hypothesis"],
+	}
+	tokens := make(map[string]struct{})
+	for _, value := range raw {
+		for _, token := range splitSearchTokens(value) {
+			tokens[token] = struct{}{}
+		}
+	}
+	return tokens
+}
+
+func splitSearchTokens(value string) []string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return nil
+	}
+	replacer := strings.NewReplacer("/", " ", "_", " ", "-", " ", ".", " ", ":", " ", ",", " ")
+	value = replacer.Replace(value)
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if field != "" {
+			out = append(out, field)
+		}
+	}
+	return out
+}
+
+func tokenSetSimilarity(a, b map[string]struct{}) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	intersection := 0
+	union := len(a)
+	for token := range b {
+		if _, ok := a[token]; ok {
+			intersection++
+		} else {
+			union++
+		}
+	}
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
 }
 
 func EvaluateOuterLoopStatus(session *Session) OuterLoopStatus {
