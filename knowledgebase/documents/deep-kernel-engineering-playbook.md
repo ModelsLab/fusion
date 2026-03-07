@@ -387,7 +387,7 @@ For decode attention, the metric is HBM bandwidth utilization, not TFLOPS:
 | Standard BF16 GEMM, M >= 128 | cuBLAS | Highly tuned, hard to beat |
 | Standard BF16 GEMM, M < 128 (decode) | Triton or custom | cuBLAS underperforms at small M |
 | INT4 weight-only quant (W4A16) | Marlin / CUTLASS | Dequant fused into GEMM |
-| FP8 GEMM (W8A8) | cuBLAS FP8 / CUTLASS | Native FP8 tensor core support on Hopper+ |
+| FP8 GEMM (W8A8) | cuBLAS FP8 / CUTLASS | Native FP8 tensor core support on Ada/Hopper/Blackwell |
 | GEMM + activation fused | Triton / CUTLASS epilogue | Avoid extra memory round-trip |
 | Grouped GEMM (MoE) | CUTLASS Grouped GEMM | Batch multiple small GEMMs efficiently |
 | Extremely small M (M=1, pure decode) | Triton / custom CUDA | Treat as GEMV, not GEMM |
@@ -402,14 +402,14 @@ Marlin is the gold standard for W4A16 GEMM. Key properties:
 
 #### FP8 GEMM with Delayed Scaling
 
-On Hopper and Blackwell:
+On Ada, Hopper, and Blackwell:
 - Per-tensor or per-channel scaling factors stored separately
 - GEMM computed in FP8 on tensor cores, accumulated in FP32
 - Delayed scaling: scale factors computed from the previous iteration (avoids synchronization)
 - cuBLAS and CUTLASS both support FP8 natively
 
 ```python
-# Using cuBLAS FP8 via PyTorch (Hopper+)
+# Using cuBLAS FP8 via PyTorch (Ada/Hopper/Blackwell)
 import torch
 import torch._scaled_mm
 
@@ -665,7 +665,7 @@ def chunked_lm_head(hidden, lm_weight, chunk_size=32768):
     return torch.cat(logits_chunks, dim=-1)
 ```
 
-2. **FP8 LM Head**: Quantize LM head weight to FP8. Halves memory read, nearly halving latency. On Hopper, use `torch._scaled_mm`.
+2. **FP8 LM Head**: Quantize LM head weight to FP8. Halves memory read, nearly halving latency. On Ada/Hopper/Blackwell, use `torch._scaled_mm`.
 
 3. **Speculative Decoding LM Head**: When using speculative decoding, the LM head is called on draft model outputs. Keep the draft model LM head in FP8/INT8.
 
@@ -1215,7 +1215,7 @@ Common fixes:
 
 #### Ampere (A100, RTX 3090)
 
-- Max shared memory per SM: 164 KB (A100), 100 KB (RTX 3090)
+- Max shared memory per SM: 164 KB (A100 GA100), 96 KB (RTX 3090 GA102)
 - Max registers per SM: 65536
 - Tensor core instruction: `mma.m16n8k16` for BF16
 - No TMA, no warp-specialization
@@ -1491,7 +1491,7 @@ Stop optimizing when ANY of these conditions is true:
 | FP32 | 4 | 3.4e38 | Reference, accumulators |
 | BF16 | 2 | 3.4e38 (low precision) | Default training/inference |
 | FP16 | 2 | 6.5e4 | Inference (watch for overflow) |
-| FP8 E4M3 | 1 | 448 | Hopper+ inference |
+| FP8 E4M3 | 1 | 448 | Ada/Hopper/Blackwell inference |
 | FP8 E5M2 | 1 | 5.7e4 | Gradients (training) |
 | INT8 | 1 | -128 to 127 | Weight/activation quantization |
 | INT4 | 0.5 | -8 to 7 | Weight-only quantization |

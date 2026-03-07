@@ -203,7 +203,7 @@ end-to-end (includes VAE decode).
 Notes on diffusion performance:
 - `torch.compile` typically gives 20-40% speedup on diffusion models.
 - LCM/Turbo/Lightning distillation reduces steps dramatically (50 -> 4-8).
-- FP8 quantization of UNet/DiT can give 15-30% speedup on Hopper GPUs.
+- FP8 quantization of UNet/DiT can give 15-30% speedup on Ada/Hopper/Blackwell GPUs.
 - INT8 weight-only quantization gives ~10-20% speedup with minimal quality loss.
 - Batch size > 1 improves throughput but not per-image latency much.
 
@@ -376,7 +376,7 @@ are memory-bound; above it they are compute-bound.
 
 - FP16/BF16 -> INT4 (AWQ/GPTQ): ~1.4-1.7x faster decode, ~1.2-1.4x faster prefill
 - FP16/BF16 -> INT8: ~1.3-1.5x faster decode, ~1.1-1.3x faster prefill
-- BF16 -> FP8 (Hopper only): ~1.4-1.6x faster decode, ~1.3-1.5x faster prefill
+- BF16 -> FP8 (Ada/Hopper/Blackwell): ~1.4-1.6x faster decode, ~1.3-1.5x faster prefill
 - GGUF Q4_K_M vs AWQ INT4: GGUF is typically 10-20% slower due to dequantization
   overhead, but has better quality-preserving mixed quantization
 

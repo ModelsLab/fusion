@@ -27,8 +27,8 @@
 | TF32 | 19 | 1 | 8 | 10 | Same as FP32 | ~3.5 digits | Ampere+ |
 | FP16 | 16 | 1 | 5 | 10 | ~6e-8 to 65504 | ~3.5 digits | Volta+ |
 | BF16 | 16 | 1 | 8 | 7 | Same as FP32 | ~2 digits | Ampere+ |
-| FP8 E4M3 | 8 | 1 | 4 | 3 | ~0.002 to 448 | ~1 digit | Hopper+ |
-| FP8 E5M2 | 8 | 1 | 5 | 2 | ~1e-7 to 57344 | <1 digit | Hopper+ |
+| FP8 E4M3 | 8 | 1 | 4 | 3 | ~0.002 to 448 | ~1 digit | Ada/Hopper/Blackwell |
+| FP8 E5M2 | 8 | 1 | 5 | 2 | ~1e-7 to 57344 | <1 digit | Ada/Hopper/Blackwell |
 | FP4 E2M1 (NVFP4) | 4 | 1 | 2 | 1 | 0 to 6 | Very limited | Blackwell |
 | MXFP8 | 8+shared | 1 | 4 | 3 | Block-scaled | Block-enhanced | Blackwell |
 

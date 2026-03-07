@@ -836,7 +836,7 @@ def _attn_fwd(Q, K, V, sm_scale, M, Out,
     tl.store(O_block_ptr, acc.to(Out.type.element_ty))
 ```
 
-**Key features**: Online softmax (never materializes full NxN attention matrix), causal masking via stage parameter, exp2 with prescaled QK for faster computation, FP8 output support on Hopper+.
+**Key features**: Online softmax (never materializes full NxN attention matrix), causal masking via stage parameter, exp2 with prescaled QK for faster computation, FP8 output support on Ada/Hopper/Blackwell.
 
 ### 7.4 Layer Normalization
 

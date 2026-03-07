@@ -4,7 +4,7 @@ kind: skill
 title: FP8 Serving Evaluation
 type: ""
 category: precision
-summary: Validate packaged or synthesized FP8 deployment branches before investing in custom tensor-core kernel work on Hopper or Blackwell.
+summary: Validate packaged or synthesized FP8 deployment branches before investing in custom tensor-core kernel work on Ada, Hopper, or Blackwell GPUs (all have FP8 tensor cores).
 support_level: stable
 reliability: ""
 review_status: ""
@@ -29,9 +29,12 @@ operators:
   - matmul
   - attention
 gpu_families:
+  - Ada
   - Hopper
   - Blackwell
 gpu_ids:
+  - rtx4090
+  - l40s
   - h100
   - h200
   - b200

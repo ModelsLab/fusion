@@ -203,7 +203,7 @@ func (p *Planner) recommendModelPaths(req Request, gpu *kb.GPUProfile, bottlenec
 			ID:           "fp8_serving",
 			Name:         "FP8 Serving Path",
 			Format:       "fp8",
-			Summary:      "Preferred mature low-precision path on Hopper and Blackwell when the model and runtime tolerate FP8 calibration.",
+			Summary:      "Preferred mature low-precision path on Ada, Hopper, and Blackwell GPUs (all have FP8 tensor cores) when the model and runtime tolerate FP8 calibration.",
 			SupportLevel: "recommended",
 			Actions: []string{
 				"Validate an FP8 runtime path before hand-writing custom tensor-core kernels.",
@@ -395,6 +395,9 @@ func scoreModelPath(spec modelPathSpec, req Request, gpu *kb.GPUProfile, bottlen
 		if gpu != nil && matchesBucket(gpu.Family, []string{"Hopper", "Blackwell"}) {
 			score += 28
 			reasons = append(reasons, fmt.Sprintf("%s is the best GPU family for mature FP8 paths", gpu.Family))
+		} else if gpu != nil && matchesBucket(gpu.Family, []string{"Ada"}) {
+			score += 20
+			reasons = append(reasons, fmt.Sprintf("%s has FP8 tensor cores and supports FP8 inference", gpu.Family))
 		} else if gpu != nil {
 			score -= 24
 			reasons = append(reasons, fmt.Sprintf("%s does not provide a first-class native FP8 tensor-core serving path", gpu.Name))
@@ -460,8 +463,8 @@ func precisionSupportWarnings(gpu *kb.GPUProfile) []string {
 	family := canonicalGPUFamily(gpu.Family)
 	warnings := []string{}
 
-	if family != "hopper" && family != "blackwell" {
-		warnings = append(warnings, fmt.Sprintf("%s is not a Hopper or Blackwell GPU, so native FP8 serving should not be treated as a first-line optimization path here.", gpu.Name))
+	if family != "hopper" && family != "blackwell" && family != "ada" {
+		warnings = append(warnings, fmt.Sprintf("%s does not have native FP8 tensor cores, so FP8 serving should not be treated as a first-line optimization path here.", gpu.Name))
 	}
 	if family != "blackwell" {
 		warnings = append(warnings, fmt.Sprintf("%s is not a Blackwell GPU, so NVFP4 or block-scaled FP4 should be treated as unsupported for production optimization on this target.", gpu.Name))

@@ -15,6 +15,7 @@ operators:
   - matmul
   - gemm
 gpu_families:
+  - Ada
   - Hopper
   - Blackwell
 precision:

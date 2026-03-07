@@ -35,10 +35,13 @@ operators:
   - moe
 gpu_families:
   - Ampere
+  - Ada
   - Hopper
   - Blackwell
 gpu_ids:
   - a100
+  - rtx4090
+  - l40s
   - h100
   - h200
   - b200

@@ -352,10 +352,10 @@ llama-cli -m model.Q4_K_M.gguf -p "Hello world"
 
 #### 5d. FP8 Quantization
 
-Native 8-bit floating point on Hopper+ GPUs (H100, H200, B100). Supported natively by
+Native 8-bit floating point on Ada/Hopper/Blackwell GPUs (RTX 4090, L40S, H100, H200, B100, B200). Supported natively by
 TensorRT-LLM, vLLM, and SGLang with minimal quality loss.
 
-- **Speedup**: 1.5-2x over FP16 on Hopper GPUs
+- **Speedup**: 1.5-2x over FP16 on Ada/Hopper/Blackwell GPUs
 - **Quality Impact**: Near-lossless (<0.5% degradation)
 
 ```python
@@ -769,7 +769,7 @@ fine-tunes.
 | AWQ (INT4) | LLM | Any LLM | 2-3x | <1% | No (PTQ) | Easy |
 | GPTQ (INT4) | LLM | Any LLM | 2-3x | <1% | No (PTQ) | Easy |
 | GGUF | LLM | Any LLM | CPU viable | <2% | No | Easy |
-| FP8 | LLM | Any LLM (Hopper+) | 1.5-2x | <0.5% | No | Easy |
+| FP8 | LLM | Any LLM (Ada/Hopper/Blackwell) | 1.5-2x | <0.5% | No | Easy |
 | SageAttention | LLM/Diffusion | Any transformer | 2-5x attn | None | No | Easy |
 | LLMLingua | LLM | Any LLM | 1.7-5.7x | <1.5% | No | Easy |
 | Lookahead Decoding | LLM | Any causal LM | 1.5-2.3x | Lossless | No | Medium |
@@ -855,7 +855,7 @@ Many techniques are orthogonal and can be combined for compound speedup:
 | **Basic** | AWQ + vLLM | 2-3x | Easiest setup |
 | **Standard** | AWQ + EAGLE + vLLM | 4-6x | Best latency reduction |
 | **Long-Context** | AWQ + SnapKV + SageAttention | 3-5x | For >8K contexts |
-| **Maximum** | FP8 + EAGLE + SnapKV + SageAttention | 5-10x | Hopper GPU required |
+| **Maximum** | FP8 + EAGLE + SnapKV + SageAttention | 5-10x | Ada/Hopper/Blackwell GPU required |
 | **Budget** | GGUF Q4_K_M + llama.cpp | 2-3x (CPU viable) | No GPU needed |
 
 ### Diffusion Stacking Recipes

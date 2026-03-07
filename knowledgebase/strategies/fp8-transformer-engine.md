@@ -1,10 +1,10 @@
 ---
 id: fp8_transformer_engine
 kind: strategy
-title: Use FP8 Paths First On Hopper And Blackwell
+title: Use FP8 Paths First On Ada, Hopper, And Blackwell
 type: ""
 category: precision
-summary: Hopper and Blackwell should usually validate mature FP8 inference paths before custom kernel work.
+summary: Ada, Hopper, and Blackwell GPUs (all have FP8 tensor cores) should validate mature FP8 inference paths before custom kernel work.
 support_level: stable
 reliability: ""
 review_status: ""
@@ -37,10 +37,14 @@ operators:
   - gemm
   - attention
 gpu_families:
+  - Ada
   - Hopper
   - Blackwell
 gpu_ids:
+  - rtx4090
+  - l40s
   - h100
+  - h200
   - b200
 precision:
   - fp8

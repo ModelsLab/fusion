@@ -34,7 +34,7 @@ preconditions:
   - quantization quality is acceptable for use case
 actions:
   - evaluate AWQ INT4 (g128) as first choice for consumer GPUs
-  - evaluate FP8 as first choice for datacenter GPUs with native FP8 (Hopper+)
+  - evaluate FP8 as first choice for GPUs with native FP8 tensor cores (Ada, Hopper, Blackwell)
   - benchmark with Marlin kernel for INT4 (fastest W4A16 GEMM)
   - measure perplexity degradation to ensure acceptable quality
   - use FP4 on Blackwell for maximum throughput
@@ -49,14 +49,15 @@ tradeoffs:
 ---
 
 ## Actions
-- evaluate AWQ INT4 for consumer GPUs, FP8 for Hopper+ datacenter
+- evaluate AWQ INT4 or FP8 for Ada consumer GPUs, FP8 for Hopper/Blackwell datacenter
 - benchmark with specialized kernels (Marlin for INT4, cuBLAS for FP8)
 - measure perplexity to validate quality
 
 ## Decision Matrix
 | GPU | Best Quantization | Expected Speedup |
 |-----|------------------|-----------------|
-| RTX 3090/4090 | AWQ INT4 (g128) | 3-4x decode |
-| A100 | AWQ INT4 or FP8 | 2-4x decode |
+| RTX 3090 (Ampere) | AWQ INT4 (g128) | 3-4x decode |
+| RTX 4090 (Ada) | AWQ INT4 or FP8 | 2-4x decode |
+| A100 (Ampere) | AWQ INT4 | 2-4x decode |
 | H100 | FP8 (native) | 2x decode |
 | B200 | FP4 (native) | 4x decode |

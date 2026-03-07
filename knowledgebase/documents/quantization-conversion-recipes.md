@@ -42,16 +42,16 @@ precision:
 What is your deployment target?
 │
 ├─ vLLM / SGLang (GPU serving)
-│  ├─ Hopper/Blackwell GPU? → FP8 (best quality, ~2x memory savings)
-│  ├─ Ampere/Ada GPU? → AWQ INT4 (best speed with Marlin kernel)
-│  └─ Multi-GPU? → FP8 if Hopper, else AWQ INT4
+│  ├─ Ada/Hopper/Blackwell GPU? → FP8 (best quality, ~2x memory savings)
+│  ├─ Ampere GPU? → AWQ INT4 (best speed with Marlin kernel)
+│  └─ Multi-GPU? → FP8 if Ada/Hopper/Blackwell, else AWQ INT4
 │
 ├─ llama.cpp / Ollama (CPU or consumer GPU)
 │  └─ GGUF Q4_K_M (best quality/size tradeoff)
 │
 ├─ TensorRT-LLM
-│  ├─ Hopper? → FP8 (native TRT-LLM support)
-│  └─ Ampere/Ada? → INT4 AWQ or INT8 SmoothQuant
+│  ├─ Ada/Hopper/Blackwell? → FP8 (native TRT-LLM support)
+│  └─ Ampere? → INT4 AWQ or INT8 SmoothQuant
 │
 ├─ PyTorch / HuggingFace (research/dev)
 │  ├─ Fine-tuning? → QLoRA (NF4 via bitsandbytes)
@@ -399,14 +399,14 @@ vllm serve Llama-3.1-8B-Instruct-GPTQ \
 
 ---
 
-## Recipe 3: FP8 Quantization (Hopper/Blackwell)
+## Recipe 3: FP8 Quantization (Ada/Hopper/Blackwell)
 
 ### Why FP8?
 ```
 FP8 E4M3: 4 exponent bits, 3 mantissa bits, range [-448, 448]
   - 2x memory reduction vs FP16 (8 GB instead of 16 GB for 8B model)
   - <0.1 perplexity degradation (nearly lossless)
-  - Native tensor core support on Hopper (H100/H200) and Blackwell (B100/B200)
+  - Native tensor core support on Ada (RTX 4090, L4, L40S), Hopper (H100/H200), and Blackwell (B100/B200)
   - No calibration data needed for simple per-tensor quantization
   - cuBLAS/cuBLASLt support FP8 GEMM natively
 ```
@@ -421,7 +421,7 @@ vllm serve meta-llama/Llama-3.1-8B-Instruct \
 
 # This applies per-tensor FP8 quantization to all linear layers
 # No separate quantization step needed!
-# Works only on Hopper+ GPUs (H100, H200, B100, B200)
+# Works only on Ada/Hopper/Blackwell GPUs (RTX 4090, L40S, H100, H200, B100, B200)
 ```
 
 ### Method B: Offline FP8 Quantization with llm-compressor
@@ -497,14 +497,14 @@ vllm serve meta-llama/Llama-3.1-8B-Instruct \
 │ Memory savings   │ 2x           │ 4x           │
 │ Quality loss     │ <0.1 PPL     │ 0.1-0.5 PPL  │
 │ Calibration      │ Optional     │ Required     │
-│ GPU requirement  │ Hopper+      │ Any NVIDIA   │
+│ GPU requirement  │ Ada/Hopper+  │ Any NVIDIA   │
 │ Decode speedup   │ ~1.5-2x      │ ~3-4x        │
 │ Prefill speedup  │ ~1.5x        │ ~1.5-2x      │
 │ Best for         │ Quality-first│ Memory-first │
 └──────────────────┴──────────────┴──────────────┘
 
-Decision: If you have a Hopper GPU AND quality matters → FP8
-          If you need max memory savings OR have Ampere/Ada → INT4 AWQ
+Decision: If you have an Ada/Hopper/Blackwell GPU AND quality matters → FP8
+          If you need max memory savings OR have Ampere → INT4 AWQ
           If you want both → FP8 weights + INT4 KV cache
 ```
 
@@ -621,7 +621,7 @@ ollama run my-llama
 ### When to Use
 ```
 - When INT4 quality is not acceptable
-- When FP8 is not available (pre-Hopper GPUs)
+- When FP8 is not available (pre-Ada GPUs, i.e. Ampere and older)
 - When you need both weight AND activation quantization
 - Server workloads with large batches (INT8 tensor cores are fast)
 ```
@@ -717,7 +717,7 @@ Speed ranking:   AWQ+Marlin > FP8 > INT8 > GPTQ > GGUF (on GPU)
 
 ```
 [ ] 1. Decide format based on deployment target (see decision tree above)
-[ ] 2. Check GPU compatibility (FP8 needs Hopper+, INT4 works everywhere)
+[ ] 2. Check GPU compatibility (FP8 needs Ada/Hopper/Blackwell, INT4 works everywhere)
 [ ] 3. Prepare calibration data (128-512 representative samples)
 [ ] 4. Run quantization (AWQ: ~15min, GPTQ: ~1-4hr, FP8: ~5min, GGUF: ~10min)
 [ ] 5. Validate quality:

@@ -343,7 +343,7 @@ vllm serve ./Llama-3.1-8B-AWQ \
 #   AWQ:  ~260 tokens/sec, 4.5 GB VRAM (4x faster, 3.5x less memory)
 ```
 
-### Script 4: FP8 Optimization (Hopper GPUs)
+### Script 4: FP8 Optimization (Ada/Hopper/Blackwell GPUs)
 ```bash
 # No quantization step needed! vLLM handles FP8 on-the-fly
 vllm serve meta-llama/Llama-3.1-8B-Instruct \
@@ -376,7 +376,7 @@ vllm serve meta-llama/Llama-3.1-8B-Instruct \
 ```bash
 # Performance flags (most impactful first)
 --quantization awq          # AWQ INT4 (3-4x decode speedup)
---quantization fp8          # FP8 (2x speedup, Hopper+ only)
+--quantization fp8          # FP8 (2x speedup, Ada/Hopper/Blackwell only)
 --kv-cache-dtype fp8_e4m3   # FP8 KV cache (2x KV memory savings)
 --enable-chunked-prefill    # Better long-context handling
 --max-num-seqs 256          # Max concurrent sequences (tune for throughput)

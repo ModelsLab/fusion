@@ -232,7 +232,7 @@ with te.fp8_autocast(enabled=True):
     output = layer(input)
 ```
 
-### FP8 GEMM on Hopper
+### FP8 GEMM on Ada/Hopper/Blackwell
 
 Native FP8 tensor cores provide 2x throughput vs FP16:
 ```
@@ -557,7 +557,7 @@ model = AutoAWQForCausalLM.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
 model.quantize(tokenizer, quant_config={"zero_point": True, "q_group_size": 128, "w_bit": 4, "version": "gemm"})
 model.save_quantized("./model-awq")
 
-# FP8 (instant, no calibration, Hopper+ only)
+# FP8 (instant, no calibration, Ada/Hopper/Blackwell only)
 vllm serve meta-llama/Llama-3.1-8B-Instruct --quantization fp8
 
 # GGUF Q4_K_M
@@ -572,7 +572,7 @@ quantize_(model, int4_weight_only(group_size=128))
 ### Speed & Quality Quick Reference
 | Method | Quality Loss | Memory | Decode Speedup | GPU Required | Calibration |
 |--------|-------------|--------|---------------|-------------|-------------|
-| FP8 | <0.1 PPL | 2x smaller | 1.5-2x | Hopper+ | No |
+| FP8 | <0.1 PPL | 2x smaller | 1.5-2x | Ada/Hopper/Blackwell | No |
 | AWQ INT4 | 0.1-0.5 PPL | 4x smaller | 3-4x | Any NVIDIA | Yes (15min) |
 | GPTQ INT4 | 0.1-0.5 PPL | 4x smaller | 2-3x | Any NVIDIA | Yes (1-4hr) |
 | GGUF Q4_K_M | 0.2-0.5 PPL | 4x smaller | 2-3x (CPU/GPU) | Any | No |
@@ -582,7 +582,7 @@ quantize_(model, int4_weight_only(group_size=128))
 ### "Which Quantization Should I Use?" Decision Tree
 ```
 Is quality the #1 priority?
-├─ YES → FP8 (if Hopper+) or INT8 SmoothQuant
+├─ YES → FP8 (if Ada/Hopper/Blackwell) or INT8 SmoothQuant
 └─ NO → continue
 
 Need to fit on consumer GPU (24GB)?

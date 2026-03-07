@@ -464,9 +464,9 @@ scale = fp8_max / amax              # fp8_max = 448 for E4M3
 - E8M0 (power-of-2) scale format
 - Native on Blackwell tensor cores
 
-### 5.3 FP8 GEMM on Hopper (H100)
+### 5.3 FP8 GEMM on Ada/Hopper/Blackwell
 
-Hopper introduces native FP8 tensor cores:
+Ada Lovelace introduced native FP8 tensor cores (also present on Hopper and Blackwell):
 
 ```
 // H100 FP8 Tensor Core operation:
@@ -517,9 +517,9 @@ with te.fp8_autocast(enabled=True, fp8_recipe=te.recipe.DelayedScaling(
 ### 5.5 Performance Characteristics
 
 - **Memory**: 2x reduction vs FP16
-- **Compute**: 2x throughput on Hopper (FP8 vs FP16 tensor cores)
+- **Compute**: 2x throughput on Ada/Hopper/Blackwell (FP8 vs FP16 tensor cores)
 - **Accuracy**: Within ~1% of BF16 with proper scaling
-- **When to use**: Hopper/Blackwell GPUs; large batch inference; FP8-native models (increasingly common)
+- **When to use**: Ada/Hopper/Blackwell GPUs (all have FP8 tensor cores); large batch inference; FP8-native models (increasingly common)
 
 ---
 
@@ -994,7 +994,7 @@ Rule of thumb:
 
 ### 9.6 When to Use
 
-- **FP8 KV cache**: Default recommendation for long-context serving on Hopper+
+- **FP8 KV cache**: Default recommendation for long-context serving on Ada/Hopper/Blackwell
 - **INT4 KV cache**: When memory is severely constrained; 128K+ context lengths
 - **No KV quantization**: Short contexts, accuracy-critical applications
 
@@ -1646,7 +1646,7 @@ Y = X @ W_ternary
 | Scenario | Recommended Technique | Bits/Weight | Memory Savings | Speed |
 |----------|----------------------|------------|---------------|-------|
 | **Production serving, Ampere GPU** | AWQ or GPTQ + Marlin kernel | 4-bit (W4A16) | ~4x | ~3-4x |
-| **Production serving, Hopper GPU** | FP8 W8A8 or AWQ + Machete | 8-bit or 4-bit | 2-4x | 2-4x |
+| **Production serving, Ada/Hopper GPU** | FP8 W8A8 or AWQ + Machete | 8-bit or 4-bit | 2-4x | 2-4x |
 | **Production serving, Blackwell** | NVFP4 or MXFP8 | 4-8 bit | 2-4x | 2-5x |
 | **Maximum compression, quality matters** | QuIP# or AQLM | 2-3 bit | 5-8x | ~2-3x |
 | **Maximum compression, speed matters** | GPTQ + Marlin-24 (sparse+quant) | ~2.5 effective | ~6x | ~5x |

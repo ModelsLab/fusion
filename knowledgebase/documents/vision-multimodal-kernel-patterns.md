@@ -430,7 +430,7 @@ INT8 Conv2d performance on RTX 4090:
 
 ### FP8 Attention in Vision
 
-FP8 (E4M3 for forward, E5M2 for backward) is available on Hopper and Blackwell.
+FP8 (E4M3 for forward, E5M2 for backward) is available on Ada, Hopper, and Blackwell.
 Vision attention benefits less than LLM attention from FP8 because sequence lengths
 are shorter (196-1024 vs 2048-128K), making attention less memory-bound.
 
@@ -518,7 +518,7 @@ Sequence packing (preferred):
 Model Type          Best Attention        Best Precision    Key Kernel
 -----------         ---------------       --------------    ----------
 ViT-B/16 (224)      FlashAttention-2      INT8 (PTQ)        Fused patch embed
-ViT-L/14 (336)      FlashAttention-2      FP8 (Hopper)      Fused patch embed
+ViT-L/14 (336)      FlashAttention-2      FP8 (Ada/Hopper+)  Fused patch embed
 DiT-XL (256)        FlashAttention-2      BF16/FP8          Fused adaLN-Zero
 SD 1.5 U-Net        xformers/Flash-2      FP16              Fused GroupNorm+SiLU
 SDXL U-Net          FlashAttention-2      BF16              CFG batching
@@ -568,7 +568,7 @@ START: Vision/Multimodal Model Optimization
 GPU Family    VRAM     Best Diffusion Config          Best VLM Config
 ----------    ----     ---------------------          ---------------
 Ampere        24 GB    FP16, Flash-2, CFG batch       INT4 LLM + FP16 ViT
-Ada           24 GB    BF16, Flash-2, CFG batch       INT4 LLM + FP16 ViT
+Ada           24 GB    BF16/FP8, Flash-2, CFG batch   FP8 LLM + FP16 ViT
 Hopper        80 GB    FP8, Flash-2, torch.compile    FP8 LLM + FP16 ViT
 Blackwell     96 GB    FP8/FP4, Flash-3, compile      FP8 LLM + FP8 ViT
 ```

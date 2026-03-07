@@ -534,7 +534,7 @@ MSCCL is built on top of NCCL, using its building blocks to execute custom colle
 
 ### 4.1 Overview
 
-Transformer Engine (TE) is a library for accelerating Transformer models on NVIDIA GPUs using FP8 (and FP4) precision on Hopper, Ada, and Blackwell architectures. It provides drop-in replacements for PyTorch, JAX, and PaddlePaddle modules that automatically manage mixed-precision FP8 training.
+Transformer Engine (TE) is a library for accelerating Transformer models on NVIDIA GPUs using FP8 precision on Ada, Hopper, and Blackwell architectures (and FP4 on Blackwell). It provides drop-in replacements for PyTorch, JAX, and PaddlePaddle modules that automatically manage mixed-precision FP8 training.
 
 ### 4.2 Delayed Scaling Mechanism
 
@@ -764,7 +764,7 @@ cusparseLtDestroy(&handle);
 - FP16 data / FP16 or FP32 accumulation
 - BF16 data / FP32 accumulation
 - INT8 data / INT32 accumulation
-- FP8 (Hopper+): E4M3/E5M2 with FP32 accumulation
+- FP8 (Ada/Hopper/Blackwell): E4M3/E5M2 with FP32 accumulation
 
 ### 5.7 Pruning Strategies
 

@@ -293,12 +293,12 @@ The Marlin kernel achieves near-optimal W4A16 performance:
 - Near cuBLAS FP16 throughput despite 4-bit weights
 - Achieves 80-90% of theoretical memory bandwidth
 
-### FP8 GEMM (Hopper native)
+### FP8 GEMM (Ada/Hopper/Blackwell native)
 ```
 # E4M3 for forward, E5M2 for backward
 C_fp32 = scale_A * scale_B * fp8_gemm(A_e4m3, B_e4m3)
 ```
-- Native FP8 tensor cores on Hopper: 2x throughput vs FP16
+- Native FP8 tensor cores on Ada/Hopper/Blackwell: 2x throughput vs FP16
 - Per-tensor or per-token scaling
 - Transformer Engine handles scale management (delayed scaling with amax history)
 

@@ -76,7 +76,8 @@ Do not stop at the first positive delta. Build a candidate ladder, test every ap
 
 ## Precision And Quantization Pass
 
-- On Ampere and Ada, test fp16, bf16, AWQ or INT4, and KV-cache changes before chasing native FP8 or NVFP4.
+- On Ampere (no FP8 tensor cores), test fp16, bf16, AWQ or INT4, and KV-cache changes. FP8 is not available on Ampere.
+- On Ada (has FP8 tensor cores), test FP8 alongside AWQ or INT4 early. Ada GPUs like RTX 4090 and L40S support native FP8 inference. If no packaged FP8 artifact exists, attempt calibrated FP8 conversion with Model Optimizer, Transformer Engine, torchao, or llm-compressor when the runtime supports it.
 - On Hopper, test FP8 before more speculative low-precision branches. If no packaged FP8 artifact exists, attempt calibrated FP8 conversion with Model Optimizer, Transformer Engine, torchao, or llm-compressor when the runtime supports it.
 - On Blackwell, FP8 comes before NVFP4 or block-scaled FP4, and synthesized FP8 should be evaluated before more custom kernels when the software stack supports it.
 - Treat FP8 conversion as an explicit candidate family with calibration, quality validation, and fallback rules, not as a note that depends on pre-quantized checkpoints.

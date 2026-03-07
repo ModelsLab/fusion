@@ -45,7 +45,7 @@ tradeoffs:
 ---
 
 ## Actions
-- enable FP8 KV cache as default for Hopper+ GPUs
+- enable FP8 KV cache as default for GPUs with FP8 tensor cores (Ada, Hopper, Blackwell)
 - measure quality impact on representative benchmarks
 - calculate memory savings and resulting batch size increase
 

@@ -1234,7 +1234,7 @@ Y_fp32  = Y_int32 * scale_x * scale_w  (dequantize in epilogue)
 
 ### 9.3 FP8 GEMM: E4M3 x E4M3
 
-FP8 is the preferred low-precision format on Hopper+:
+FP8 is the preferred low-precision format on Ada, Hopper, and Blackwell (all have FP8 tensor cores):
 
 ```
 Y_fp32 = X_fp8_e4m3 * W_fp8_e4m3    (FP8 tensor core GEMM)

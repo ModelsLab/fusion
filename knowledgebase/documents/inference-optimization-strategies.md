@@ -54,7 +54,7 @@ All GEMMs have large M dimension → compute-bound on GPU.
 ### Optimization Strategies
 
 1. **Use FP8/FP4 for 2-4x compute throughput**
-   - FP8 tensor cores: 2x FLOPS vs FP16 on Hopper
+   - FP8 tensor cores: 2x FLOPS vs FP16 on Ada/Hopper/Blackwell
    - FP4 tensor cores: 4x FLOPS vs FP16 on Blackwell
    - Marginal accuracy loss for prefill computation
 
@@ -833,9 +833,9 @@ done
     → Requires NVLink for best results (PCIe adds latency)
     → Expected: ~1.8x speedup per 2x TP increase
 
-[ ] Step 5: Consider FP8 compute (Hopper: ~1.5x faster matmul)
+[ ] Step 5: Consider FP8 compute (Ada/Hopper/Blackwell: ~1.5x faster matmul)
     → vLLM: --dtype float8 (or use a pre-quantized FP8 model)
-    → Hopper FP8 tensor cores: 2x FLOPS vs FP16
+    → FP8 tensor cores (Ada/Hopper/Blackwell): 2x FLOPS vs FP16
     → Realized improvement: ~1.5-1.8x for prefill (not full 2x due to overhead)
     → Blackwell FP4: up to ~3x realized improvement
 ```
@@ -953,8 +953,8 @@ Approximate single-stream (batch=1) decode performance. Numbers are representati
 
 | GPU | FP16 | AWQ INT4 | FP8 | INT4 + CUDA Graphs | INT4 + Spec. Decoding (k=5) |
 |-----|------|----------|-----|---------------------|------------------------------|
-| RTX 4090 (24GB) | 55-65 tok/s | 140-170 tok/s | N/A (no FP8) | 160-190 tok/s | 250-350 tok/s |
-| A100 80GB | 70-85 tok/s | 160-200 tok/s | 120-150 tok/s | 180-220 tok/s | 300-450 tok/s |
+| RTX 4090 (24GB) | 55-65 tok/s | 140-170 tok/s | 100-130 tok/s | 160-190 tok/s | 250-350 tok/s |
+| A100 80GB | 70-85 tok/s | 160-200 tok/s | N/A (no FP8, Ampere) | 180-220 tok/s | 300-450 tok/s |
 | H100 80GB | 100-130 tok/s | 250-310 tok/s | 200-250 tok/s | 280-340 tok/s | 450-650 tok/s |
 
 **LLaMA 3.1 70B Instruct**

@@ -30,9 +30,11 @@ operators:
   - matmul
   - attention
 gpu_families:
+  - Ampere
   - Ada
   - Blackwell
 gpu_ids:
+  - rtx3090
   - rtx4090
   - rtx5090
   - rtx6000ada

@@ -96,7 +96,7 @@ to avoid wasting time on unsupported combinations.
 
 **"Can I use AWQ with SGLang on Ada GPU?"** -- Yes. SGLang supports AWQ INT4 since v0.1.0. Ada GPUs (RTX 4090, L40S) are fully supported. Use `--quantization awq` flag.
 
-**"Can I use FP8 on Ampere?"** -- No. FP8 requires Hopper (H100, H200) or Ada (RTX 4090, L40S). On Ampere, use AWQ INT4 or GPTQ INT4 instead.
+**"Can I use FP8 on Ampere?"** -- No. FP8 requires Ada (RTX 4090, L40S), Hopper (H100, H200), or Blackwell (B100, B200, RTX 5090). On Ampere, use AWQ INT4 or GPTQ INT4 instead.
 
 **"Can I use GGUF models with vLLM?"** -- Yes, since v0.5.3. But GGUF in vLLM is slower than native AWQ/GPTQ. Use GGUF with llama.cpp for best single-user performance.
 
@@ -367,7 +367,7 @@ trtllm-build \
 
 **Quantization at Build Time**:
 ```bash
-# FP8 (Hopper)
+# FP8 (Ada/Hopper/Blackwell)
 trtllm-build \
     --checkpoint_dir ./tllm_checkpoint \
     --output_dir ./tllm_engines \
@@ -1166,7 +1166,7 @@ For serving workloads with many concurrent users, frameworks rank approximately:
 
 ### "FP8 not supported on this GPU"
 
-- **Cause**: FP8 requires Hopper (sm_90) or Ada (sm_89). Ampere and older do not have FP8 hardware.
+- **Cause**: FP8 requires Ada (sm_89), Hopper (sm_90), or Blackwell (sm_100). Ampere and older do not have FP8 hardware.
 - **Fix**: Use AWQ INT4 or GPTQ INT4 on Ampere. Use INT8 W8A8 (SmoothQuant) as a middle ground.
 
 ### "GGUF model extremely slow in vLLM"

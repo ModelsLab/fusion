@@ -4,7 +4,7 @@ kind: source
 title: NVIDIA Transformer Engine
 type: repo
 category: precision
-summary: Official NVIDIA FP8-focused transformer library and reference stack for Hopper and Blackwell precision flows.
+summary: Official NVIDIA FP8-focused transformer library and reference stack for Ada, Hopper, and Blackwell precision flows.
 support_level: ""
 reliability: repo
 review_status: reviewed
@@ -13,6 +13,7 @@ tags:
   - nvidia
   - transformer-engine
   - fp8
+  - ada
   - blackwell
   - hopper
 aliases: []
@@ -58,7 +59,7 @@ path: ""
 
 ## Summary
 
-Official NVIDIA FP8-focused transformer library and reference stack for Hopper and Blackwell precision flows.
+Official NVIDIA FP8-focused transformer library and reference stack for Ada, Hopper, and Blackwell precision flows.
 
 ## Tags
 

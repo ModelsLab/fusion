@@ -144,7 +144,7 @@ def attention_with_fallback(q, k, v, causal=True):
 ### GEMM Fallback
 ```python
 def gemm_with_fallback(a, b, dtype=None):
-    # Try FP8 GEMM (Hopper+)
+    # Try FP8 GEMM (Ada/Hopper/Blackwell)
     if dtype == torch.float8_e4m3fn and hasattr(torch, '_scaled_mm'):
         try:
             return torch._scaled_mm(a, b, ...)
@@ -164,7 +164,7 @@ def gemm_with_fallback(a, b, dtype=None):
 ### Quantization Fallback
 ```
 Quantization fallback chain:
-1. FP8 (best quality, Hopper+ only)
+1. FP8 (best quality, Ada/Hopper/Blackwell only)
    → if not supported: fall back to...
 2. AWQ INT4 with Marlin kernel (fast, good quality)
    → if CUDA error or quality too low: fall back to...

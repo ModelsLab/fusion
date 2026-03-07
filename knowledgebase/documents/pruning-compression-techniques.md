@@ -335,7 +335,7 @@ Original:  [0.5, 0.0, 0.3, 0.0, 0.0, 0.7, 0.0, 0.2]
 | FP16 | FP32 | Ampere (A100) |
 | BF16 | FP32 | Ampere (A100) |
 | INT8 | INT32 | Ampere (A100) |
-| FP8 | FP32 | Hopper (H100) |
+| FP8 | FP32 | Ada/Hopper/Blackwell |
 | TF32 | FP32 | Ampere (A100) |
 
 ### 3.3 Training with 2:4 Sparsity

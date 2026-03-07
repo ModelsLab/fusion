@@ -11,6 +11,7 @@ workloads:
   - prefill
   - decode
 gpu_families:
+  - Ada
   - Hopper
   - Blackwell
 precision:

@@ -32,9 +32,12 @@ operators:
   - matmul
   - attention
 gpu_families:
+  - Ada
   - Hopper
   - Blackwell
 gpu_ids:
+  - rtx4090
+  - l40s
   - h100
   - h200
   - b200

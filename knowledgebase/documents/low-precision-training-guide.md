@@ -57,8 +57,8 @@ for batch in dataloader:
 | TF32 | 8 bits | 10 bits | +/-3.4e38 | Tensor core compute (Ampere+) |
 | BF16 | 8 bits | 7 bits | +/-3.4e38 | Training activations/gradients |
 | FP16 | 5 bits | 10 bits | +/-65504 | Inference, legacy training |
-| FP8 E4M3 | 4 bits | 3 bits | +/-448 | Forward pass (Hopper+) |
-| FP8 E5M2 | 5 bits | 2 bits | +/-57344 | Backward pass (Hopper+) |
+| FP8 E4M3 | 4 bits | 3 bits | +/-448 | Forward pass (Ada/Hopper/Blackwell) |
+| FP8 E5M2 | 5 bits | 2 bits | +/-57344 | Backward pass (Ada/Hopper/Blackwell) |
 
 ## BF16 Training
 
@@ -99,7 +99,7 @@ def fused_linear_kernel(X, W, OUT, M, N, K, BLOCK_M: tl.constexpr, BLOCK_N: tl.c
 # - GEMM: BF16 inputs, FP32 accumulation (automatic on tensor cores)
 ```
 
-## FP8 Training (Hopper/Blackwell)
+## FP8 Training (Ada/Hopper/Blackwell)
 
 ### NVIDIA Transformer Engine
 ```python
@@ -457,7 +457,7 @@ trainer.train()
 | `Training runs but loss does not decrease` | LoRA rank too low or wrong target modules | Increase `r` to 64-128 and target all linear layers |
 | `CUDA error: device-side assert triggered` | Label values out of vocabulary range | Check dataset for labels >= `vocab_size`; ensure `eos_token` is set correctly |
 
-### Recipe 3: FP8 Training with Transformer Engine (Hopper GPUs)
+### Recipe 3: FP8 Training with Transformer Engine (Ada/Hopper/Blackwell GPUs)
 
 Native FP8 training for H100/H200/B200 GPUs using NVIDIA Transformer Engine.
 

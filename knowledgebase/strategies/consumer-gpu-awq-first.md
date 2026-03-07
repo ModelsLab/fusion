@@ -1,10 +1,10 @@
 ---
 id: consumer_gpu_awq_first
 kind: strategy
-title: Try AWQ Or INT4 Early On Consumer GPUs
+title: Try Weight-Only INT4 Early On Consumer GPUs
 type: ""
 category: precision
-summary: Consumer Ada and Blackwell cards usually benefit from weight-only INT4 or AWQ before deeper kernel work.
+summary: Consumer GPUs often benefit from weight-only INT4 before deeper kernel work, but multimodal and diffusion models should treat AWQ as an LLM-specific variant rather than the default name for the whole branch.
 support_level: stable
 reliability: ""
 review_status: ""
@@ -33,9 +33,11 @@ operators:
   - matmul
   - attention
 gpu_families:
+  - Ampere
   - Ada
   - Blackwell
 gpu_ids:
+  - rtx3090
   - rtx4090
   - rtx5090
   - rtx6000ada
@@ -57,7 +59,9 @@ preconditions:
   - the model fits a supported quantization flow
   - a quality gate exists for the target model family
 actions:
-  - benchmark an AWQ or equivalent INT4 track before building new high-byte kernels
+  - benchmark a weight-only INT4 track before building new high-byte kernels
+  - for LLM runtimes, this often means AWQ or a compatible fused-dequant INT4 path
+  - for diffusion, DiT, and multimodal transformer pipelines, prefer generic weight-only INT4 flows such as Quanto or torchao instead of assuming AWQ tooling applies
   - prefer fused dequant plus GEMM paths instead of standalone dequant stages
   - treat prefill and decode as separate benchmark tracks
 metrics:
@@ -66,6 +70,7 @@ metrics:
   - quality drift
 tradeoffs:
   - quality depends on calibration and runtime support
+  - INT4 often improves fit first; throughput wins are workload and kernel dependent
   - compute-heavy prefill can still require custom kernels after quantization
 preferred_backends: []
 required_tools: []

@@ -404,13 +404,13 @@ NVIDIA GPUs (Ampere+) include **hardware compression/decompression** for data in
 |---|---|---|---|
 | FP32 | 4 | 1.0x | Master weights (training) |
 | BF16/FP16 | 2 | 0.5x | Activations, forward/backward pass |
-| FP8 (E4M3/E5M2) | 1 | 0.25x | Hopper+ forward pass, KV cache |
+| FP8 (E4M3/E5M2) | 1 | 0.25x | Ada/Hopper/Blackwell forward pass, KV cache |
 | INT8 | 1 | 0.25x | Inference weights (PTQ/QAT) |
 | INT4 | 0.5 | 0.125x | Inference weights (GPTQ, AWQ) |
 
 **Memory bandwidth savings:**
 - Halving precision (FP32 -> FP16) halves memory traffic, effectively doubling bandwidth
-- FP8 on Hopper/Blackwell: 4x less traffic than FP32, plus 2x higher compute throughput
+- FP8 on Ada/Hopper/Blackwell: 4x less traffic than FP32, plus 2x higher compute throughput
 
 ### 4.3 Kernel Fusion
 
@@ -536,7 +536,7 @@ At 32K context:  128 KB * 32,768 = 4.0 GB per request
 | KV Precision | Bytes/Element | Memory vs FP16 | Quality Impact |
 |---|---|---|---|
 | FP16 | 2 | 1.0x (baseline) | None |
-| FP8 | 1 | 0.5x | Minimal (native on Hopper+) |
+| FP8 | 1 | 0.5x | Minimal (native on Ada/Hopper/Blackwell) |
 | INT8 | 1 | 0.5x | Low |
 | INT4 | 0.5 | 0.25x | Moderate (experimental) |
 
