@@ -186,6 +186,10 @@ func scoreContextStrategy(strategy Strategy, req ContextRequest, gpu *GPUProfile
 		score += len(goalOverlap) * 6
 		reasons = append(reasons, fmt.Sprintf("advances goals: %s", strings.Join(goalOverlap, ", ")))
 	}
+	if taskScore := taskQueryScore(req.Task, strategy.ID, strategy.Title, strategy.Summary, strings.Join(strategy.Actions, " "), strings.Join(strategy.Tradeoffs, " ")); taskScore > 0 {
+		score += taskScore
+		reasons = append(reasons, fmt.Sprintf("relevant to %s tasks", req.Task))
+	}
 
 	if queryScore := scoreText(tokenize(req.Query), strategy.ID, strategy.Title, strategy.Summary, strings.Join(strategy.Actions, " "), strings.Join(strategy.Tradeoffs, " ")); queryScore > 0 {
 		score += queryScore
@@ -270,6 +274,10 @@ func scoreContextSkill(skill Skill, req ContextRequest, gpu *GPUProfile, bottlen
 		score += len(goalOverlap) * 5
 		reasons = append(reasons, fmt.Sprintf("supports goals: %s", strings.Join(goalOverlap, ", ")))
 	}
+	if taskScore := taskQueryScore(req.Task, skill.ID, skill.Title, skill.Summary, strings.Join(skill.PreferredBackends, " "), strings.Join(skill.Steps, " ")); taskScore > 0 {
+		score += taskScore
+		reasons = append(reasons, fmt.Sprintf("skill is relevant to %s tasks", req.Task))
+	}
 
 	if queryScore := scoreText(tokenize(req.Query), skill.ID, skill.Title, skill.Summary, strings.Join(skill.PreferredBackends, " "), strings.Join(skill.Steps, " ")); queryScore > 0 {
 		score += queryScore
@@ -347,6 +355,10 @@ func scoreContextExample(example Example, req ContextRequest, gpu *GPUProfile, b
 	if bottleneck != "" && containsAnyValue(example.UseCases, bottleneck) {
 		score += 6
 		reasons = append(reasons, fmt.Sprintf("example is relevant to %s bottlenecks", bottleneck))
+	}
+	if taskScore := taskQueryScore(req.Task, example.ID, example.Title, example.Category, example.Backend, example.Summary, strings.Join(example.UseCases, " "), strings.Join(example.Notes, " ")); taskScore > 0 {
+		score += taskScore
+		reasons = append(reasons, fmt.Sprintf("example is relevant to %s tasks", req.Task))
 	}
 
 	if queryScore := scoreText(tokenize(req.Query), example.ID, example.Title, example.Category, example.Backend, example.Summary, strings.Join(example.UseCases, " "), strings.Join(example.Notes, " ")); queryScore > 0 {
@@ -426,6 +438,10 @@ func scoreContextDocument(document Document, req ContextRequest, gpu *GPUProfile
 		score += 6
 		reasons = append(reasons, fmt.Sprintf("mentions %s bottlenecks", bottleneck))
 	}
+	if taskScore := taskQueryScore(req.Task, document.ID, document.Title, document.Summary, document.Body); taskScore > 0 {
+		score += taskScore
+		reasons = append(reasons, fmt.Sprintf("document is relevant to %s tasks", req.Task))
+	}
 
 	if queryScore := scoreText(tokenize(req.Query), document.ID, document.Title, document.Summary, document.Body); queryScore > 0 {
 		score += queryScore
@@ -473,16 +489,45 @@ func normalizeContextRequest(req ContextRequest) ContextRequest {
 	req.Query = strings.TrimSpace(req.Query)
 	req.GPU = strings.TrimSpace(req.GPU)
 	req.Model = strings.TrimSpace(req.Model)
+	req.Task = normalizeTaskContext(req.Task)
 	req.Workload = firstNormalized(req.Workload)
 	req.Precision = firstNormalized(req.Precision)
 	req.Bottleneck = firstNormalized(req.Bottleneck)
 	req.Runtime = firstNormalized(req.Runtime)
 	req.Operators = normalizeValues(req.Operators)
 	req.Goals = normalizeValues(req.Goals)
-	if req.Workload == "" {
+	if req.Workload == "" && (req.Task == "" || req.Task == "text-generation") {
 		req.Workload = "decode"
 	}
 	return req
+}
+
+func normalizeTaskContext(value string) string {
+	value = firstNormalized(value)
+	switch value {
+	case "", "auto":
+		return ""
+	case "text", "textgen", "llm", "chat", "completion":
+		return "text-generation"
+	case "image", "img", "imagegen":
+		return "image-generation"
+	case "image-edit", "edit":
+		return "image-editing"
+	case "video", "videogen":
+		return "video-generation"
+	case "audio", "tts", "speech":
+		return "audio-generation"
+	default:
+		return value
+	}
+}
+
+func taskQueryScore(task string, fields ...string) int {
+	task = strings.TrimSpace(task)
+	if task == "" {
+		return 0
+	}
+	return scoreText(tokenize(task), fields...)
 }
 
 func matchesOptionalBucket(target string, values []string, allowEmpty bool) bool {

@@ -13,6 +13,7 @@ import (
 type Request struct {
 	GPU                 string
 	Model               string
+	Task                string
 	Workload            string
 	Operators           []string
 	Precision           string

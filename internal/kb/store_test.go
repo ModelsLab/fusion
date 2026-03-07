@@ -110,6 +110,23 @@ func TestContextPacketForB200DecodeReturnsBlackwellGuidance(t *testing.T) {
 	}
 }
 
+func TestContextPacketKeepsMultimodalWorkloadUnsetByDefault(t *testing.T) {
+	store, err := LoadDefault()
+	if err != nil {
+		t.Fatalf("LoadDefault() error = %v", err)
+	}
+
+	packet := store.BuildContextPacket(ContextRequest{
+		Task:  "video-generation",
+		Query: "optimize a video generation pipeline for latency and quality",
+		Limit: 4,
+	})
+
+	if packet.Request.Workload != "" {
+		t.Fatalf("expected multimodal task to keep workload unset when none is provided, got %q", packet.Request.Workload)
+	}
+}
+
 func TestLoadDefaultPrefersUserKnowledgeDB(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

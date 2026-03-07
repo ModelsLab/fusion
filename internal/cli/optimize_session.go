@@ -74,6 +74,7 @@ func newOptimizeSessionCreateCommand() *cobra.Command {
 				Query:               query,
 				GPU:                 request.GPU,
 				Model:               request.Model,
+				Task:                request.Task,
 				Workload:            request.Workload,
 				Operators:           request.Operators,
 				Precision:           request.Precision,
@@ -111,6 +112,7 @@ func newOptimizeSessionCreateCommand() *cobra.Command {
 			cmd.Printf("Created optimization session: %s\n", session.ID)
 			cmd.Printf("Metadata: %s\n", path)
 			cmd.Printf("Workspace root: %s\n", session.WorkspaceRoot)
+			cmd.Printf("Memory: %s\n", optimize.SessionMemoryIndexPath(session))
 			if session.Context.GPU != nil {
 				cmd.Printf("GPU: %s\n", session.Context.GPU.Name)
 			}
@@ -139,6 +141,7 @@ func newOptimizeSessionCreateCommand() *cobra.Command {
 	cmd.Flags().StringVar(&targetName, "target", "", "configured target name; uses the target GPU when --gpu is omitted")
 	cmd.Flags().StringVar(&request.GPU, "gpu", "", "target GPU id or name")
 	cmd.Flags().StringVar(&request.Model, "model", "", "model name or family")
+	cmd.Flags().StringVar(&request.Task, "task", "", "task family like text-generation, image-generation, image-editing, video-generation, or audio-generation")
 	cmd.Flags().StringVar(&request.Workload, "workload", "decode", "workload shape: decode, prefill, serving, training-prep")
 	cmd.Flags().StringSliceVar(&request.Operators, "operator", nil, "operator families to optimize; repeat or comma-separate")
 	cmd.Flags().StringVar(&request.Precision, "precision", "bf16", "target precision, for example bf16, fp16, fp8, int4")
@@ -199,11 +202,13 @@ func newOptimizeSessionShowCommand() *cobra.Command {
 			cmd.Printf("id: %s\n", session.ID)
 			cmd.Printf("project: %s\n", session.ProjectRoot)
 			cmd.Printf("workspace root: %s\n", session.WorkspaceRoot)
+			cmd.Printf("memory: %s\n", optimize.SessionMemoryIndexPath(session))
 			cmd.Printf("target: %s\n", valueOrFallback(session.Target, "unspecified"))
 			cmd.Printf("runtime: %s\n", valueOrFallback(session.Runtime, "unspecified"))
 			cmd.Printf("status: %s\n", valueOrFallback(session.Status, "ready"))
 			cmd.Printf("gpu: %s\n", valueOrFallback(session.Request.GPU, "unspecified"))
 			cmd.Printf("model: %s\n", valueOrFallback(session.Request.Model, "unspecified"))
+			cmd.Printf("task: %s\n", valueOrFallback(session.Request.Task, "unspecified"))
 			cmd.Printf("workload: %s\n", valueOrFallback(session.Request.Workload, "decode"))
 			cmd.Printf("precision: %s\n", valueOrFallback(session.Request.Precision, "bf16"))
 			cmd.Printf("operators: %s\n", joinOrFallback(session.Request.Operators, "general"))

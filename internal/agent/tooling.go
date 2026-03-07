@@ -96,6 +96,13 @@ func DefaultTools(toolCtx ToolContext) []Tool {
 		rankSearchCandidatesTool(),
 		saveRoundArtifactTool(toolCtx),
 		recordReflexionTool(toolCtx),
+		detectRuntimeEnvironmentTool(toolCtx),
+		applyRuntimePatchTool(toolCtx),
+		revertRuntimePatchTool(),
+		createHarnessManifestTool(toolCtx),
+		assessHarnessTool(toolCtx),
+		inferHotspotsTool(toolCtx),
+		writeSessionMemoryTool(toolCtx),
 		planOptimizationTool(toolCtx),
 		detectEnvironmentTool(),
 		listTargetsTool(toolCtx),
@@ -802,6 +809,7 @@ func buildContextPacketTool(toolCtx ToolContext) Tool {
 		Query               string   `json:"query"`
 		GPU                 string   `json:"gpu"`
 		Model               string   `json:"model"`
+		Task                string   `json:"task"`
 		Workload            string   `json:"workload"`
 		Operators           []string `json:"operators"`
 		Precision           string   `json:"precision"`
@@ -820,6 +828,7 @@ func buildContextPacketTool(toolCtx ToolContext) Tool {
 					"query":                stringSchema("free-form request or retrieval hint"),
 					"gpu":                  stringSchema("GPU id or name"),
 					"model":                stringSchema("model name or family"),
+					"task":                 stringSchema("task family like text-generation, image-generation, image-editing, video-generation, or audio-generation"),
 					"workload":             stringSchema("decode, prefill, serving, or training-prep"),
 					"operators":            stringArraySchema("operator families"),
 					"precision":            stringSchema("precision or quantization path"),
@@ -842,6 +851,7 @@ func buildContextPacketTool(toolCtx ToolContext) Tool {
 				Query:               req.Query,
 				GPU:                 req.GPU,
 				Model:               req.Model,
+				Task:                req.Task,
 				Workload:            req.Workload,
 				Operators:           req.Operators,
 				Precision:           req.Precision,
@@ -861,6 +871,7 @@ func planOptimizationTool(toolCtx ToolContext) Tool {
 		Target              string   `json:"target"`
 		GPU                 string   `json:"gpu"`
 		Model               string   `json:"model"`
+		Task                string   `json:"task"`
 		Workload            string   `json:"workload"`
 		Operators           []string `json:"operators"`
 		Precision           string   `json:"precision"`
@@ -879,6 +890,7 @@ func planOptimizationTool(toolCtx ToolContext) Tool {
 					"target":               stringSchema("optional target name"),
 					"gpu":                  stringSchema("GPU id or name"),
 					"model":                stringSchema("model name or family"),
+					"task":                 stringSchema("task family like text-generation, image-generation, image-editing, video-generation, or audio-generation"),
 					"workload":             stringSchema("decode, prefill, serving, or training-prep"),
 					"operators":            stringArraySchema("operator families"),
 					"precision":            stringSchema("precision or quantization path"),
@@ -900,6 +912,7 @@ func planOptimizationTool(toolCtx ToolContext) Tool {
 			request := optimize.Request{
 				GPU:                 req.GPU,
 				Model:               req.Model,
+				Task:                req.Task,
 				Workload:            req.Workload,
 				Operators:           req.Operators,
 				Precision:           req.Precision,

@@ -18,6 +18,10 @@ func newOptimizeCommand() *cobra.Command {
 		newOptimizeRunCommand(),
 		newOptimizeSessionCommand(),
 		newOptimizePlanCommand(),
+		newOptimizeHarnessCommand(),
+		newOptimizeRuntimeCommand(),
+		newOptimizeMemoryCommand(),
+		newOptimizeHotspotCommand(),
 		newOptimizeCuteCommand(),
 		newOptimizeTritonCommand(),
 		newOptimizeCUDACommand(),
@@ -69,6 +73,7 @@ func newOptimizePlanCommand() *cobra.Command {
 				cmd.Println("- GPU: unspecified")
 			}
 			cmd.Printf("- Model: %s\n", valueOrFallback(request.Model, "unspecified"))
+			cmd.Printf("- Task: %s\n", valueOrFallback(request.Task, "unspecified"))
 			cmd.Printf("- Workload: %s\n", valueOrFallback(plan.Request.Workload, "decode"))
 			cmd.Printf("- Precision: %s\n", valueOrFallback(plan.Request.Precision, "bf16"))
 			cmd.Printf("- Operators: %s\n", joinOrFallback(plan.Request.Operators, "general transformer path"))
@@ -160,6 +165,7 @@ func newOptimizePlanCommand() *cobra.Command {
 	cmd.Flags().StringVar(&targetName, "target", "", "configured target name; if set, the target GPU is used when --gpu is omitted")
 	cmd.Flags().StringVar(&request.GPU, "gpu", "", "target GPU id or name; defaults to the first detected NVIDIA GPU when available")
 	cmd.Flags().StringVar(&request.Model, "model", "", "model name or family, for example llama-3.1-8b or qwen2.5-32b")
+	cmd.Flags().StringVar(&request.Task, "task", "", "task family like text-generation, image-generation, image-editing, video-generation, or audio-generation")
 	cmd.Flags().StringVar(&request.Workload, "workload", "decode", "workload shape: decode, prefill, serving, training-prep")
 	cmd.Flags().StringSliceVar(&request.Operators, "operator", nil, "operator families to optimize; repeat or comma-separate")
 	cmd.Flags().StringVar(&request.Precision, "precision", "bf16", "target precision, for example bf16, fp16, fp8, int4")

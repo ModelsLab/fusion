@@ -151,6 +151,7 @@ type ContextRequest struct {
 	Query               string   `json:"query"`
 	GPU                 string   `json:"gpu"`
 	Model               string   `json:"model"`
+	Task                string   `json:"task"`
 	Workload            string   `json:"workload"`
 	Operators           []string `json:"operators"`
 	Precision           string   `json:"precision"`

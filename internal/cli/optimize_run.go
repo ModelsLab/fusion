@@ -64,6 +64,7 @@ func newOptimizeRunCommand() *cobra.Command {
 
 	cmd.Flags().StringVar(&request.GPU, "gpu", "", "target GPU id or name")
 	cmd.Flags().StringVar(&request.Model, "model", "", "model name or family to optimize")
+	cmd.Flags().StringVar(&request.Task, "task", "", "task family like text-generation, image-generation, image-editing, video-generation, or audio-generation")
 	cmd.Flags().StringVar(&request.Workload, "workload", "", "workload shape: decode, prefill, serving, training-prep")
 	cmd.Flags().StringSliceVar(&request.Operators, "operator", nil, "operator families to optimize; repeat or comma-separate")
 	cmd.Flags().StringVar(&request.Precision, "precision", "", "target precision or quantization path")
@@ -355,6 +356,7 @@ func refreshSessionContext(store *kb.Store, session *optimize.Session, limit int
 		Query:               session.Query,
 		GPU:                 session.Request.GPU,
 		Model:               session.Request.Model,
+		Task:                session.Request.Task,
 		Workload:            session.Request.Workload,
 		Operators:           session.Request.Operators,
 		Precision:           session.Request.Precision,
@@ -377,6 +379,9 @@ func defaultOptimizationQuery(session *optimize.Session) string {
 	}
 	if workload := strings.TrimSpace(session.Request.Workload); workload != "" {
 		parts = append(parts, "for "+workload)
+	}
+	if task := strings.TrimSpace(session.Request.Task); task != "" {
+		parts = append(parts, "task="+task)
 	}
 	if runtimeName := strings.TrimSpace(session.Runtime); runtimeName != "" {
 		parts = append(parts, "in "+runtimeName)

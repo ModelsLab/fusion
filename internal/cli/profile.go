@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/ModelsLab/fusion/internal/artifacts"
@@ -118,6 +119,9 @@ func newProfileAnalyzeCommand() *cobra.Command {
 	var artifactPath string
 	var tool string
 	var outputPath string
+	var task string
+	var runtimeName string
+	var workload string
 
 	cmd := &cobra.Command{
 		Use:   "analyze",
@@ -135,16 +139,25 @@ func newProfileAnalyzeCommand() *cobra.Command {
 			resolvedTool := valueOrFallback(tool, artifact.Tool)
 			profile := optimize.ParseNsightProfile(resolvedTool, artifact.Stdout, artifact.Stderr)
 			report := optimize.AnalyzeRoofline(profile)
-			prescription := optimize.PrescribeFromReport(report, optimize.Request{}, optimize.Candidate{
+			request := optimize.Request{
+				Task:     task,
+				Workload: workload,
+			}
+			prescription := optimize.PrescribeFromReport(report, request, optimize.Candidate{
 				Name:    artifact.Name,
 				Backend: resolvedTool,
 			})
+			var hotspots optimize.HotspotAttribution
+			if strings.TrimSpace(profile.KernelName) != "" {
+				hotspots = optimize.InferHotspotAttribution(task, runtimeName, workload, []string{profile.KernelName})
+			}
 
 			payload := map[string]any{
-				"artifact":      artifactPath,
-				"profile":       profile,
-				"diagnosis":     report,
-				"prescription":  prescription,
+				"artifact":     artifactPath,
+				"profile":      profile,
+				"diagnosis":    report,
+				"prescription": prescription,
+				"hotspots":     hotspots,
 			}
 			if outputPath != "" {
 				data, err := json.MarshalIndent(payload, "", "  ")
@@ -163,6 +176,12 @@ func newProfileAnalyzeCommand() *cobra.Command {
 			cmd.Printf("Efficiency: %.2f%%\n", report.Efficiency*100)
 			cmd.Printf("Confidence: %.2f\n", report.Confidence)
 			cmd.Printf("Summary: %s\n", report.Summary)
+			if len(hotspots.Matches) > 0 {
+				cmd.Println("Hotspot attribution")
+				for _, match := range hotspots.Matches {
+					cmd.Printf("- %s -> %s/%s (%s)\n", match.KernelName, match.Stage, match.Component, match.Operator)
+				}
+			}
 			if len(report.RootCauses) > 0 {
 				cmd.Println("Root causes")
 				for _, cause := range report.RootCauses {
@@ -181,6 +200,9 @@ func newProfileAnalyzeCommand() *cobra.Command {
 
 	cmd.Flags().StringVar(&artifactPath, "artifact", "", "path to a saved profile artifact JSON")
 	cmd.Flags().StringVar(&tool, "tool", "", "override the profiler tool label, for example ncu or nsys")
+	cmd.Flags().StringVar(&task, "task", "", "task family like text-generation, image-generation, image-editing, video-generation, or audio-generation")
+	cmd.Flags().StringVar(&runtimeName, "runtime", "", "runtime label for hotspot attribution")
+	cmd.Flags().StringVar(&workload, "workload", "", "workload label like decode, sampling, or refinement")
 	cmd.Flags().StringVar(&outputPath, "output", "", "optional output path for the normalized analysis JSON")
 	cmd.MarkFlagRequired("artifact")
 	return cmd

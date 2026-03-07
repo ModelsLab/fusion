@@ -26,6 +26,7 @@ func createOptimizationSessionTool(toolCtx ToolContext) Tool {
 		Target              string   `json:"target"`
 		GPU                 string   `json:"gpu"`
 		Model               string   `json:"model"`
+		Task                string   `json:"task"`
 		Workload            string   `json:"workload"`
 		Operators           []string `json:"operators"`
 		Precision           string   `json:"precision"`
@@ -47,6 +48,7 @@ func createOptimizationSessionTool(toolCtx ToolContext) Tool {
 					"target":               stringSchema("optional configured target name"),
 					"gpu":                  stringSchema("GPU id or name"),
 					"model":                stringSchema("model name or family"),
+					"task":                 stringSchema("task family like text-generation, image-generation, image-editing, video-generation, or audio-generation"),
 					"workload":             stringSchema("decode, prefill, serving, or training-prep"),
 					"operators":            stringArraySchema("operator families"),
 					"precision":            stringSchema("precision or quantization path"),
@@ -69,6 +71,7 @@ func createOptimizationSessionTool(toolCtx ToolContext) Tool {
 			request := optimize.Request{
 				GPU:                 req.GPU,
 				Model:               req.Model,
+				Task:                req.Task,
 				Workload:            req.Workload,
 				Operators:           req.Operators,
 				Precision:           req.Precision,
@@ -96,6 +99,7 @@ func createOptimizationSessionTool(toolCtx ToolContext) Tool {
 				Query:               req.Query,
 				GPU:                 request.GPU,
 				Model:               request.Model,
+				Task:                request.Task,
 				Workload:            request.Workload,
 				Operators:           request.Operators,
 				Precision:           request.Precision,

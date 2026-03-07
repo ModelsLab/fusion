@@ -40,26 +40,26 @@ type Session struct {
 }
 
 type Candidate struct {
-	ID          string                    `json:"id"`
-	Name        string                    `json:"name"`
-	Backend     string                    `json:"backend"`
-	Template    string                    `json:"template,omitempty"`
-	Operation   string                    `json:"operation,omitempty"`
-	GPUArch     string                    `json:"gpu_arch,omitempty"`
-	Workspace   string                    `json:"workspace"`
-	ParentID    string                    `json:"parent_id,omitempty"`
-	Status      string                    `json:"status,omitempty"`
-	SearchMode  string                    `json:"search_mode,omitempty"`
-	SearchLane  string                    `json:"search_lane,omitempty"`
-	Round       int                       `json:"round,omitempty"`
-	Hypothesis  string                    `json:"hypothesis,omitempty"`
-	Score       float64                   `json:"score,omitempty"`
-	Winner      bool                      `json:"winner,omitempty"`
-	RejectReason string                   `json:"reject_reason,omitempty"`
-	CreatedAt   time.Time                 `json:"created_at"`
-	UpdatedAt   time.Time                 `json:"updated_at"`
-	Stages      map[string]CandidateStage `json:"stages,omitempty"`
-	Description string                    `json:"description,omitempty"`
+	ID           string                    `json:"id"`
+	Name         string                    `json:"name"`
+	Backend      string                    `json:"backend"`
+	Template     string                    `json:"template,omitempty"`
+	Operation    string                    `json:"operation,omitempty"`
+	GPUArch      string                    `json:"gpu_arch,omitempty"`
+	Workspace    string                    `json:"workspace"`
+	ParentID     string                    `json:"parent_id,omitempty"`
+	Status       string                    `json:"status,omitempty"`
+	SearchMode   string                    `json:"search_mode,omitempty"`
+	SearchLane   string                    `json:"search_lane,omitempty"`
+	Round        int                       `json:"round,omitempty"`
+	Hypothesis   string                    `json:"hypothesis,omitempty"`
+	Score        float64                   `json:"score,omitempty"`
+	Winner       bool                      `json:"winner,omitempty"`
+	RejectReason string                    `json:"reject_reason,omitempty"`
+	CreatedAt    time.Time                 `json:"created_at"`
+	UpdatedAt    time.Time                 `json:"updated_at"`
+	Stages       map[string]CandidateStage `json:"stages,omitempty"`
+	Description  string                    `json:"description,omitempty"`
 }
 
 type CandidateStage struct {
@@ -71,22 +71,22 @@ type CandidateStage struct {
 }
 
 type LoopDecision struct {
-	Phase      string    `json:"phase"`
-	Family     string    `json:"family"`
-	Status     string    `json:"status"`
-	CandidateID string   `json:"candidate_id,omitempty"`
-	Reason     string    `json:"reason,omitempty"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	Phase       string    `json:"phase"`
+	Family      string    `json:"family"`
+	Status      string    `json:"status"`
+	CandidateID string    `json:"candidate_id,omitempty"`
+	Reason      string    `json:"reason,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type InnerLoopState struct {
-	Status        string    `json:"status,omitempty"`
-	SearchMode    string    `json:"search_mode,omitempty"`
-	BeamWidth     int       `json:"beam_width,omitempty"`
-	CurrentRound  int       `json:"current_round,omitempty"`
-	BestCandidateID string  `json:"best_candidate_id,omitempty"`
-	StartedAt     time.Time `json:"started_at,omitempty"`
-	UpdatedAt     time.Time `json:"updated_at,omitempty"`
+	Status          string    `json:"status,omitempty"`
+	SearchMode      string    `json:"search_mode,omitempty"`
+	BeamWidth       int       `json:"beam_width,omitempty"`
+	CurrentRound    int       `json:"current_round,omitempty"`
+	BestCandidateID string    `json:"best_candidate_id,omitempty"`
+	StartedAt       time.Time `json:"started_at,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at,omitempty"`
 }
 
 type SessionSummary struct {
@@ -217,6 +217,9 @@ func (s *SessionStore) Save(session *Session) (string, error) {
 
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return "", fmt.Errorf("write optimization session: %w", err)
+	}
+	if _, err := RefreshSessionMemoryIndex(session); err != nil {
+		return "", err
 	}
 	*input = *session
 	return path, nil
@@ -850,6 +853,7 @@ func cloneStage(stage CandidateStage) CandidateStage {
 func requestEmpty(request Request) bool {
 	return strings.TrimSpace(request.GPU) == "" &&
 		strings.TrimSpace(request.Model) == "" &&
+		strings.TrimSpace(request.Task) == "" &&
 		strings.TrimSpace(request.Workload) == "" &&
 		len(request.Operators) == 0 &&
 		strings.TrimSpace(request.Precision) == "" &&
