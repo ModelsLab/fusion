@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -86,6 +87,66 @@ func (s *Store) Load(id string) (*Session, error) {
 		return nil, fmt.Errorf("decode session: %w", err)
 	}
 	return &session, nil
+}
+
+func (s *Store) List() ([]*Session, error) {
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read sessions dir: %w", err)
+	}
+
+	sessions := make([]*Session, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		session, loadErr := s.Load(strings.TrimSuffix(entry.Name(), ".json"))
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		sessions = append(sessions, session)
+	}
+
+	sort.Slice(sessions, func(i, j int) bool {
+		if sessions[i].UpdatedAt.Equal(sessions[j].UpdatedAt) {
+			return sessions[i].CreatedAt.After(sessions[j].CreatedAt)
+		}
+		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
+	})
+	return sessions, nil
+}
+
+func (s *Store) FindLatestByCWD(cwd string) (*Session, error) {
+	target := normalizeSessionCWD(cwd)
+	if target == "" {
+		return nil, nil
+	}
+
+	sessions, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	for _, session := range sessions {
+		if normalizeSessionCWD(session.CWD) == target {
+			return session, nil
+		}
+	}
+	return nil, nil
+}
+
+func normalizeSessionCWD(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err == nil {
+		path = abs
+	}
+	return filepath.Clean(path)
 }
 
 func newSessionID(cwd string) string {

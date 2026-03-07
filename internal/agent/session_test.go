@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestSessionStoreSaveAndLoad(t *testing.T) {
@@ -39,5 +40,40 @@ func TestNewSessionIDIncludesProjectName(t *testing.T) {
 	id := newSessionID(filepath.Join("/tmp", "fusion-project"))
 	if id == "" || id[len(id)-14:] == "" {
 		t.Fatal("expected non-empty session id")
+	}
+}
+
+func TestSessionStoreFindLatestByCWD(t *testing.T) {
+	root := t.TempDir()
+	store := &Store{root: root}
+
+	oldSession := store.NewSession("gpt-test", "/tmp/project-a", "system")
+	oldSession.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+	oldSession.UpdatedAt = time.Now().UTC().Add(-2 * time.Hour)
+	if _, err := store.Save(oldSession); err != nil {
+		t.Fatalf("Save(oldSession) error = %v", err)
+	}
+
+	latestSession := store.NewSession("gpt-test", "/tmp/project-a", "system")
+	latestSession.CreatedAt = time.Now().UTC().Add(-1 * time.Hour)
+	latestSession.UpdatedAt = time.Now().UTC().Add(-1 * time.Hour)
+	if _, err := store.Save(latestSession); err != nil {
+		t.Fatalf("Save(latestSession) error = %v", err)
+	}
+
+	otherSession := store.NewSession("gpt-test", "/tmp/project-b", "system")
+	if _, err := store.Save(otherSession); err != nil {
+		t.Fatalf("Save(otherSession) error = %v", err)
+	}
+
+	found, err := store.FindLatestByCWD("/tmp/project-a")
+	if err != nil {
+		t.Fatalf("FindLatestByCWD() error = %v", err)
+	}
+	if found == nil {
+		t.Fatal("expected matching session")
+	}
+	if found.ID != latestSession.ID {
+		t.Fatalf("expected latest session %q, got %q", latestSession.ID, found.ID)
 	}
 }

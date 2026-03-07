@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/ModelsLab/fusion/internal/agent"
@@ -19,6 +21,7 @@ type chatOptions struct {
 	CWD       string
 	MaxRounds int
 	Prompt    string
+	New       bool
 }
 
 func newChatCommand() *cobra.Command {
@@ -36,10 +39,11 @@ func newChatCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.Model, "model", "", "model id; defaults to the configured ModelsLab model")
-	cmd.Flags().StringVar(&opts.SessionID, "session", "", "resume a previous chat session by id")
+	cmd.Flags().StringVar(&opts.SessionID, "session", "", "resume a previous chat session by id or use latest")
 	cmd.Flags().StringVar(&opts.CWD, "cwd", "", "working directory for chat tools; defaults to the current directory")
 	cmd.Flags().IntVar(&opts.MaxRounds, "max-rounds", 12, "maximum tool-calling rounds per user turn")
 	cmd.Flags().StringVar(&opts.Prompt, "prompt", "", "single prompt to run non-interactively")
+	cmd.Flags().BoolVar(&opts.New, "new", false, "start a fresh chat session instead of auto-resuming the latest one for this directory")
 	return cmd
 }
 
@@ -62,30 +66,19 @@ func runChatSession(cmd *cobra.Command, opts chatOptions) error {
 			return fmt.Errorf("resolve current working directory: %w", err)
 		}
 	}
+	cwd, err = filepath.Abs(cwd)
+	if err != nil {
+		return fmt.Errorf("resolve absolute working directory: %w", err)
+	}
 
 	store, err := agent.NewStore()
 	if err != nil {
 		return err
 	}
 
-	var session *agent.Session
-	if strings.TrimSpace(opts.SessionID) != "" {
-		session, err = store.Load(opts.SessionID)
-		if err != nil {
-			return err
-		}
-		if strings.TrimSpace(opts.Model) != "" {
-			session.Model = opts.Model
-		}
-		if strings.TrimSpace(opts.CWD) != "" {
-			session.CWD = cwd
-		}
-	} else {
-		model, _, err := resolveChatAccess(runtimeState, opts.Model)
-		if err != nil {
-			return err
-		}
-		session = store.NewSession(model, cwd, buildSystemPrompt(cwd))
+	session, autoResumed, err := resolveInitialChatSession(runtimeState, store, opts, cwd)
+	if err != nil {
+		return err
 	}
 
 	model, token, err := resolveChatAccess(runtimeState, valueOrFallback(session.Model, opts.Model))
@@ -101,25 +94,7 @@ func runChatSession(cmd *cobra.Command, opts chatOptions) error {
 		session.SystemPrompt = buildSystemPrompt(session.CWD)
 	}
 
-	client := agent.NewClient(token)
-	registry := agent.NewRegistry(agent.DefaultTools(agent.ToolContext{
-		CWD:    session.CWD,
-		Config: runtimeState.Config,
-		KB:     runtimeState.KB,
-	}))
-	engine := agent.NewEngine(client, registry, opts.MaxRounds)
-	engine.SetToolHooks(
-		func(call agent.ToolCall) {
-			cmd.Printf("tool> %s %s\n", call.Name, compactJSON(call.Arguments))
-		},
-		func(call agent.ToolCall, output string, execErr error) {
-			status := "ok"
-			if execErr != nil {
-				status = "error"
-			}
-			cmd.Printf("tool< %s [%s] %s\n", call.Name, status, summarizeToolOutput(output))
-		},
-	)
+	registry, engine := buildChatRuntime(runtimeState, token, session, opts.MaxRounds, cmd)
 
 	sessionPath, err := store.Save(session)
 	if err != nil {
@@ -139,10 +114,15 @@ func runChatSession(cmd *cobra.Command, opts chatOptions) error {
 
 	cmd.Printf("Fusion chat session: %s\n", session.ID)
 	cmd.Printf("Session file: %s\n", sessionPath)
+	if autoResumed {
+		cmd.Println("Mode: resumed latest session for this working directory")
+	} else {
+		cmd.Println("Mode: new session")
+	}
 	cmd.Printf("Provider: %s\n", modelslab.Name)
 	cmd.Printf("Model: %s\n", session.Model)
 	cmd.Printf("Working directory: %s\n", session.CWD)
-	cmd.Println("Type /help for local commands or /exit to quit.")
+	cmd.Println("Type /help for local commands, /new for a fresh session, or /exit to quit.")
 
 	reader := bufio.NewReader(cmd.InOrStdin())
 	for {
@@ -155,23 +135,25 @@ func runChatSession(cmd *cobra.Command, opts chatOptions) error {
 		if line == "" {
 			continue
 		}
-		switch line {
-		case "/exit", "exit", "quit":
+		if line == "exit" || line == "quit" {
 			return saveChatSession(store, session)
-		case "/help":
-			printChatHelp(cmd)
-			continue
-		case "/tools":
-			for _, tool := range registry.Definitions() {
-				cmd.Printf("- %s: %s\n", tool.Name, tool.Description)
+		}
+
+		if strings.HasPrefix(line, "/") {
+			handled, nextSession, nextRegistry, nextEngine, commandErr := handleLocalChatCommand(cmd, store, runtimeState, session, registry, engine, opts.MaxRounds, line)
+			if commandErr != nil {
+				cmd.Printf("error: %v\n", commandErr)
+				continue
 			}
-			continue
-		case "/session":
-			cmd.Printf("Session: %s\n", session.ID)
-			cmd.Printf("Provider: %s\n", modelslab.Name)
-			cmd.Printf("Model: %s\n", session.Model)
-			cmd.Printf("Working directory: %s\n", session.CWD)
-			continue
+			if handled {
+				if nextSession == nil {
+					return nil
+				}
+				session = nextSession
+				registry = nextRegistry
+				engine = nextEngine
+				continue
+			}
 		}
 
 		reply, turnErr := engine.RunTurn(context.Background(), session, line)
@@ -188,6 +170,270 @@ func runChatSession(cmd *cobra.Command, opts chatOptions) error {
 		}
 		if strings.TrimSpace(reply) != "" {
 			cmd.Println(reply)
+		}
+	}
+}
+
+func resolveInitialChatSession(runtimeState *runtimeState, store *agent.Store, opts chatOptions, cwd string) (*agent.Session, bool, error) {
+	var session *agent.Session
+	var err error
+
+	switch {
+	case strings.TrimSpace(opts.SessionID) != "":
+		if strings.EqualFold(strings.TrimSpace(opts.SessionID), "latest") {
+			session, err = store.FindLatestByCWD(cwd)
+			if err != nil {
+				return nil, false, err
+			}
+			if session == nil {
+				return nil, false, fmt.Errorf("no saved Fusion chat session exists for %s", cwd)
+			}
+		} else {
+			session, err = store.Load(opts.SessionID)
+			if err != nil {
+				return nil, false, err
+			}
+		}
+	case !opts.New:
+		session, err = store.FindLatestByCWD(cwd)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+
+	autoResumed := session != nil && strings.TrimSpace(opts.SessionID) == "" && !opts.New
+	if session == nil {
+		model, _, err := resolveChatAccess(runtimeState, opts.Model)
+		if err != nil {
+			return nil, false, err
+		}
+		session = store.NewSession(model, cwd, buildSystemPrompt(cwd))
+	}
+
+	if strings.TrimSpace(opts.Model) != "" {
+		session.Model = opts.Model
+	}
+	if strings.TrimSpace(opts.CWD) != "" || strings.TrimSpace(session.CWD) == "" {
+		session.CWD = cwd
+		session.SystemPrompt = buildSystemPrompt(cwd)
+	}
+
+	return session, autoResumed, nil
+}
+
+func buildChatRuntime(runtimeState *runtimeState, token string, session *agent.Session, maxRounds int, cmd *cobra.Command) (*agent.ToolRegistry, *agent.Engine) {
+	registry := agent.NewRegistry(agent.DefaultTools(agent.ToolContext{
+		CWD:    session.CWD,
+		Config: runtimeState.Config,
+		KB:     runtimeState.KB,
+	}))
+	engine := agent.NewEngine(agent.NewClient(token), registry, maxRounds)
+	engine.SetToolHooks(
+		func(call agent.ToolCall) {
+			cmd.Printf("tool> %s %s\n", call.Name, compactJSON(call.Arguments))
+		},
+		func(call agent.ToolCall, output string, execErr error) {
+			status := "ok"
+			if execErr != nil {
+				status = "error"
+			}
+			cmd.Printf("tool< %s [%s] %s\n", call.Name, status, summarizeToolOutput(output))
+		},
+	)
+	return registry, engine
+}
+
+func handleLocalChatCommand(cmd *cobra.Command, store *agent.Store, runtimeState *runtimeState, session *agent.Session, registry *agent.ToolRegistry, engine *agent.Engine, maxRounds int, line string) (bool, *agent.Session, *agent.ToolRegistry, *agent.Engine, error) {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return true, session, registry, engine, nil
+	}
+
+	switch fields[0] {
+	case "/exit":
+		if err := saveChatSession(store, session); err != nil {
+			return true, session, registry, engine, err
+		}
+		return true, nil, nil, nil, nil
+	case "/help":
+		printChatHelp(cmd)
+		return true, session, registry, engine, nil
+	case "/tools":
+		for _, tool := range registry.Definitions() {
+			cmd.Printf("- %s: %s\n", tool.Name, tool.Description)
+		}
+		return true, session, registry, engine, nil
+	case "/session":
+		cmd.Printf("Session: %s\n", session.ID)
+		cmd.Printf("Provider: %s\n", modelslab.Name)
+		cmd.Printf("Model: %s\n", session.Model)
+		cmd.Printf("Working directory: %s\n", session.CWD)
+		cmd.Printf("Messages: %d\n", len(session.Messages))
+		return true, session, registry, engine, nil
+	case "/save":
+		path, err := store.Save(session)
+		if err != nil {
+			return true, session, registry, engine, err
+		}
+		cmd.Printf("Saved session: %s\n", path)
+		return true, session, registry, engine, nil
+	case "/history":
+		limit := 12
+		if len(fields) > 1 {
+			parsed, err := strconv.Atoi(fields[1])
+			if err != nil {
+				return true, session, registry, engine, fmt.Errorf("invalid history count %q", fields[1])
+			}
+			if parsed > 0 {
+				limit = parsed
+			}
+		}
+		printSessionHistory(cmd, session, limit)
+		return true, session, registry, engine, nil
+	case "/sessions":
+		limit := 10
+		if len(fields) > 1 {
+			parsed, err := strconv.Atoi(fields[1])
+			if err != nil {
+				return true, session, registry, engine, fmt.Errorf("invalid session count %q", fields[1])
+			}
+			if parsed > 0 {
+				limit = parsed
+			}
+		}
+		sessions, err := store.List()
+		if err != nil {
+			return true, session, registry, engine, err
+		}
+		if len(sessions) == 0 {
+			cmd.Println("No saved sessions.")
+			return true, session, registry, engine, nil
+		}
+		for i, item := range sessions {
+			if i >= limit {
+				break
+			}
+			marker := " "
+			if item.ID == session.ID {
+				marker = "*"
+			}
+			cmd.Printf("%s %s  %s  %s\n", marker, item.ID, item.Model, item.CWD)
+		}
+		return true, session, registry, engine, nil
+	case "/resume":
+		if len(fields) < 2 {
+			return true, session, registry, engine, fmt.Errorf("usage: /resume <session-id|latest>")
+		}
+		var next *agent.Session
+		var err error
+		if strings.EqualFold(fields[1], "latest") {
+			next, err = store.FindLatestByCWD(session.CWD)
+		} else {
+			next, err = store.Load(fields[1])
+		}
+		if err != nil {
+			return true, session, registry, engine, err
+		}
+		if next == nil {
+			return true, session, registry, engine, fmt.Errorf("no matching session found")
+		}
+		if strings.TrimSpace(next.SystemPrompt) == "" {
+			next.SystemPrompt = buildSystemPrompt(next.CWD)
+		}
+		model, token, err := resolveChatAccess(runtimeState, next.Model)
+		if err != nil {
+			return true, session, registry, engine, err
+		}
+		next.Provider = modelslab.ProviderID
+		next.Model = model
+		nextRegistry, nextEngine := buildChatRuntime(runtimeState, token, next, maxRounds, cmd)
+		if _, err := store.Save(next); err != nil {
+			return true, session, registry, engine, err
+		}
+		cmd.Printf("Resumed session: %s\n", next.ID)
+		cmd.Printf("Working directory: %s\n", next.CWD)
+		return true, next, nextRegistry, nextEngine, nil
+	case "/new":
+		model, token, err := resolveChatAccess(runtimeState, session.Model)
+		if err != nil {
+			return true, session, registry, engine, err
+		}
+		next := store.NewSession(model, session.CWD, buildSystemPrompt(session.CWD))
+		next.Provider = modelslab.ProviderID
+		if _, err := store.Save(next); err != nil {
+			return true, session, registry, engine, err
+		}
+		nextRegistry, nextEngine := buildChatRuntime(runtimeState, token, next, maxRounds, cmd)
+		cmd.Printf("Created new session: %s\n", next.ID)
+		return true, next, nextRegistry, nextEngine, nil
+	case "/model":
+		if len(fields) == 1 {
+			cmd.Printf("Model: %s\n", session.Model)
+			return true, session, registry, engine, nil
+		}
+		model, token, err := resolveChatAccess(runtimeState, fields[1])
+		if err != nil {
+			return true, session, registry, engine, err
+		}
+		session.Model = model
+		if _, err := store.Save(session); err != nil {
+			return true, session, registry, engine, err
+		}
+		nextRegistry, nextEngine := buildChatRuntime(runtimeState, token, session, maxRounds, cmd)
+		cmd.Printf("Switched model: %s\n", session.Model)
+		return true, session, nextRegistry, nextEngine, nil
+	case "/cd":
+		if len(fields) == 1 {
+			cmd.Printf("Working directory: %s\n", session.CWD)
+			return true, session, registry, engine, nil
+		}
+		nextPath, err := filepath.Abs(strings.Join(fields[1:], " "))
+		if err != nil {
+			return true, session, registry, engine, fmt.Errorf("resolve path: %w", err)
+		}
+		info, err := os.Stat(nextPath)
+		if err != nil {
+			return true, session, registry, engine, fmt.Errorf("access path: %w", err)
+		}
+		if !info.IsDir() {
+			return true, session, registry, engine, fmt.Errorf("%s is not a directory", nextPath)
+		}
+		session.CWD = nextPath
+		session.SystemPrompt = buildSystemPrompt(session.CWD)
+		model, token, err := resolveChatAccess(runtimeState, session.Model)
+		if err != nil {
+			return true, session, registry, engine, err
+		}
+		session.Model = model
+		if _, err := store.Save(session); err != nil {
+			return true, session, registry, engine, err
+		}
+		nextRegistry, nextEngine := buildChatRuntime(runtimeState, token, session, maxRounds, cmd)
+		cmd.Printf("Working directory changed to: %s\n", session.CWD)
+		return true, session, nextRegistry, nextEngine, nil
+	default:
+		return false, session, registry, engine, nil
+	}
+}
+
+func printSessionHistory(cmd *cobra.Command, session *agent.Session, limit int) {
+	if len(session.Messages) == 0 {
+		cmd.Println("No messages in this session yet.")
+		return
+	}
+	if limit <= 0 {
+		limit = 12
+	}
+	start := 0
+	if len(session.Messages) > limit {
+		start = len(session.Messages) - limit
+	}
+	for _, message := range session.Messages[start:] {
+		switch message.Role {
+		case "tool":
+			cmd.Printf("[tool:%s] %s\n", message.ToolName, summarizeToolOutput(message.Content))
+		default:
+			cmd.Printf("[%s] %s\n", message.Role, summarizeToolOutput(message.Content))
 		}
 	}
 }
@@ -268,10 +514,17 @@ func saveChatSession(store *agent.Store, session *agent.Session) error {
 }
 
 func printChatHelp(cmd *cobra.Command) {
-	cmd.Println("/help    show local chat commands")
-	cmd.Println("/tools   list available agent tools")
-	cmd.Println("/session show the active chat session")
-	cmd.Println("/exit    save and quit")
+	cmd.Println("/help         show local chat commands")
+	cmd.Println("/tools        list available agent tools")
+	cmd.Println("/session      show the active chat session")
+	cmd.Println("/history [n]  show recent message history")
+	cmd.Println("/sessions [n] list recent sessions")
+	cmd.Println("/resume <id>  resume a saved session or /resume latest")
+	cmd.Println("/new          start a fresh session in the current working directory")
+	cmd.Println("/model [id]   show or switch the active model")
+	cmd.Println("/cd [path]    show or change the working directory")
+	cmd.Println("/save         save the current session immediately")
+	cmd.Println("/exit         save and quit")
 }
 
 func compactJSON(value string) string {

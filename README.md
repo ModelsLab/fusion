@@ -58,7 +58,7 @@ Pin a specific release or install into a custom directory:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ModelsLab/fusion/main/scripts/install.sh | \
-  FUSION_VERSION=v0.1.0 INSTALL_DIR="$HOME/.local/bin" sh
+  FUSION_VERSION=v0.2.0 INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
 Windows PowerShell:
@@ -89,8 +89,8 @@ Push a version tag and GitHub Actions will publish `tar.gz` and `.zip` assets fo
 - Windows `amd64`, `arm64`
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 The release workflow uploads matching archives plus `checksums.txt`.
@@ -138,6 +138,19 @@ Start the interactive agent shell:
 fusion
 ```
 
+By default, `fusion` resumes the latest chat session for the current working directory. Start a fresh one explicitly when you want a clean thread:
+
+```bash
+fusion chat --new
+```
+
+Resume a saved project session directly:
+
+```bash
+fusion chat --session latest
+fusion chat --session 20260307-120501-my-project
+```
+
 Run a single natural-language turn:
 
 ```bash
@@ -158,9 +171,31 @@ Chat-local commands:
 
 ```text
 /help
+/history 12
+/sessions
+/resume latest
+/new
+/model gpt-5
+/cd ~/projects/my-model
+/save
 /tools
 /session
 /exit
+```
+
+The local slash commands are for session control only. The model still does the real engineering work through Fusion tools.
+
+## Common Commands
+
+```bash
+fusion -h
+fusion version
+fusion login
+fusion hf login --token "$HF_TOKEN"
+fusion github login --token "$GITHUB_TOKEN"
+fusion env doctor --backend all --fix-script
+fusion kb search "blackwell attention"
+fusion optimize plan --gpu h100 --workload decode --operator attention
 ```
 
 Inspect the current host:
@@ -185,6 +220,16 @@ fusion update kb
 ```
 
 This bootstraps `~/.config/fusion/knowledgebase/` if needed, rebuilds the SQLite index under `~/.config/fusion/knowledge/`, and makes future Fusion runs prefer that rebuilt local knowledge base.
+
+## Session Workflow
+
+Fusion chat sessions are stored under `~/.config/fusion/sessions/`.
+
+- `fusion` auto-resumes the latest session for the current working directory.
+- `fusion chat --new` starts a clean thread in the same directory.
+- `fusion chat --session latest` resumes the newest session for the current directory.
+- `/sessions` lists recent sessions and marks the current one with `*`.
+- `/resume <id>` switches sessions without leaving the shell.
 
 See what the current machine can and cannot do:
 
