@@ -27,7 +27,7 @@ archives:
     builds:
       - fusion
     name_template: >-
-      {{ .ProjectName }}_{{ trimPrefix "v" .Version }}_{{ .Os }}_{{ .Arch }}
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     formats:
       - tar.gz
     format_overrides:

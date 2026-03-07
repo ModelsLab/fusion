@@ -58,7 +58,7 @@ Pin a specific release or install into a custom directory:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ModelsLab/fusion/main/scripts/install.sh | \
-  FUSION_VERSION=v0.2.0 INSTALL_DIR="$HOME/.local/bin" sh
+  FUSION_VERSION=v0.2.1 INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
 Windows PowerShell:
@@ -89,8 +89,8 @@ Push a version tag and GitHub Actions will publish `tar.gz` and `.zip` assets fo
 - Windows `amd64`, `arm64`
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.2.1
+git push origin v0.2.1
 ```
 
 The release workflow uploads matching archives plus `checksums.txt`.
