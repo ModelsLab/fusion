@@ -76,6 +76,8 @@ Notes:
 - Ada supports FP8 and often benefits from mature FP8 inference stacks
 - INT4 remains strong for consumer-VRAM fit and fused dequant GEMM paths
 - For diffusion and DiT, compare FP8 against INT4 instead of assuming the LLM winner transfers directly
+- If the runtime exposes an Ada-oriented low-precision kernel family such as `q8f`, benchmark that before assuming a Triton FP8 path is the best backend
+- Measured LightX2V Wan 2.2 I2V results on an RTX 4090 favored `int8-q8f` over both `fp8-q8f` and the Triton INT8/FP8 paths at `480p` and `720p`
 
 ## Hopper
 

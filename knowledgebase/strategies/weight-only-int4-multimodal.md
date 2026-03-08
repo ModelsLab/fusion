@@ -104,6 +104,7 @@ path: ""
 - use Quanto, torchao, TensorRT Model Optimizer, or an equivalent modality-compatible tool before assuming AWQ flows apply
 - benchmark fit, load time, and steady-state throughput separately because lower-bit weight formats can reduce memory while still losing throughput
 - if INT4 makes a resident path fit on a limited-VRAM card, compare that resident INT4 path against an offloaded INT8 path before doing kernel work
+- on 24 GB consumer cards, also compare INT4 against an explicit model-budget / staged-prefetch branch because the budgeted higher-precision path may fit the target shape without winning on smaller shapes
 - when adapter weights or LoRAs are involved, prefer caching the base INT4 artifact first and attaching the adapters afterward instead of baking every adapter variant into a separate quantized cache
 
 ## Tradeoffs

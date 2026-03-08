@@ -37,10 +37,12 @@ actions:
   - separate load and warmup from steady-state profiling
   - reduce offload churn and keep the dominant modules resident when the workload fits
   - test pinned-buffer reuse or staged prefetch before writing custom kernels
+  - if the unrestricted resident path fits at a smaller shape but OOMs at the target resolution, test explicit model-budget or staged-prefetch branches before changing the model family
   - use fit-first quantization if residency is blocked by VRAM
 tradeoffs:
   - can increase VRAM residency and reduce flexibility on larger shapes
   - may expose a second compute bottleneck only after transfer pressure is removed
+  - budgeted staged prefetch can be slower than an unrestricted resident path on small shapes even when it is the first branch that fits at larger shapes
 metrics:
   - cuda_memcpy_api_pct
   - h2d_memcpy_time_pct
@@ -57,6 +59,7 @@ source_ids:
 
 - separate one-time load behavior from steady-state generation before drawing conclusions
 - if transfer dominates, prioritize residency and staged prefetch over kernel rewrites
+- if a 24 GB card fits the small-shape resident path but not the target resolution, treat model budgets as a fit-first branch rather than assuming offload flags alone will save the larger shape
 - use `torch.load(..., mmap=True)` only on real `.pt` load paths, not as a generic safetensors optimization
 - use FlashPack or similar checkpoint-packing flows only when startup latency matters; do not mistake them for fixes to a transfer-heavy steady-state trace
 
